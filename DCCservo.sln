@@ -1,0 +1,35 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.36811.4
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "DCCservo", "DCCservo\DCCservo.vcxproj", "{038BED2B-CB90-2D12-C97A-F0FF0A46A61D}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|ARM = Debug|ARM
+		Debug|ARM64 = Debug|ARM64
+		Release|ARM = Release|ARM
+		Release|ARM64 = Release|ARM64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{038BED2B-CB90-2D12-C97A-F0FF0A46A61D}.Debug|ARM.ActiveCfg = Debug|ARM
+		{038BED2B-CB90-2D12-C97A-F0FF0A46A61D}.Debug|ARM.Build.0 = Debug|ARM
+		{038BED2B-CB90-2D12-C97A-F0FF0A46A61D}.Debug|ARM.Deploy.0 = Debug|ARM
+		{038BED2B-CB90-2D12-C97A-F0FF0A46A61D}.Debug|ARM64.ActiveCfg = Debug|ARM64
+		{038BED2B-CB90-2D12-C97A-F0FF0A46A61D}.Debug|ARM64.Build.0 = Debug|ARM64
+		{038BED2B-CB90-2D12-C97A-F0FF0A46A61D}.Debug|ARM64.Deploy.0 = Debug|ARM64
+		{038BED2B-CB90-2D12-C97A-F0FF0A46A61D}.Release|ARM.ActiveCfg = Release|ARM
+		{038BED2B-CB90-2D12-C97A-F0FF0A46A61D}.Release|ARM.Build.0 = Release|ARM
+		{038BED2B-CB90-2D12-C97A-F0FF0A46A61D}.Release|ARM.Deploy.0 = Release|ARM
+		{038BED2B-CB90-2D12-C97A-F0FF0A46A61D}.Release|ARM64.ActiveCfg = Release|ARM64
+		{038BED2B-CB90-2D12-C97A-F0FF0A46A61D}.Release|ARM64.Build.0 = Release|ARM64
+		{038BED2B-CB90-2D12-C97A-F0FF0A46A61D}.Release|ARM64.Deploy.0 = Release|ARM64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {9A50F08B-7C00-4DAB-B2B0-A6804BD29F04}
+	EndGlobalSection
+EndGlobal
