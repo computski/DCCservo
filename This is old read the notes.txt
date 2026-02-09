@@ -1,0 +1,33 @@
+I have recompiled under DCCservo project.
+
+
+two modes.  one is servo set up, uses serial commands
+
+second is dcc runtime.  no need to support cv commands, this is handled through setup
+
+there will be 6 servo channels.  each can be assigned a dcc address, which means we can pair servos to respond to same address
+will also be able to invert the 'sense' of each
+
+the program command is
+s pin, address, swing range, invert
+e.g.
+s 9, 1, 25, 0
+means nano pin 9 given address 1 with 25 degrees swing either side of neutral, 0 = non inverted
+
+
+and the instruction command is
+p address, thrown|closed|neutral
+e.g. p 1, t|c|n
+
+neutral is 90 degrees mid swing and used when setting up the turnout
+
+can use c string strtok with space and comma separator
+
+system responds ok if it has interpreted the command
+
+
+The swing speed is hardcoded, one degree every 15mS seems to be fine. little point making this programmable.
+a 50 degree full range will take 750mS to execute.
+
+
+the firmware builds an array of turnouts and assigns the pins.
