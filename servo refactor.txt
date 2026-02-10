@@ -1,0 +1,91 @@
++++++++++++++++++++++ globals +++++++++++++++++++++
+VIRTUALSERVO virtualservo[TOTAL_PINS];
+VIRTUALSERVO* vsBoot = nullptr;
+
+refactor to 
+VIRTUALSERVO virtualservoCollection[TOTAL_PINS];
+//delete vsBoot and make it a local var within void loop();
+
+
+++++++ void loop();+++++++++++
+static VIRTUALSERVO* vsBoot = nullptr;
+we will declare this as a static so it can be used during booting.  It should go out of scope once the unit has booted giving more efficient memory use
+
+if (newData) {  //loop contains serial command processing
+//new scope block and in here we can declare
+VIRTUALSERVO vsParse;   //a temporary virtualservo object that is used to process the incoming serial command
+
+//per character logic, e.g. a p d x etc.
+
+
+...
+VIRTUALSERVO* targetVirtualServo = nullptr;   //replace with vsParse
+
+
+}
+
+
+
++++++++++++++++++++++ void getSettings(void) {}+++++++++++++++++++++
+for (auto& s : virtualservo) 
+refactor as
+for (auto& vs : virtualservoCollection)
+
++++++++++++++++++++++void putSettings(void) {} +++++++++++++++++++++
+EEPROM.put(eeAddr, virtualservo);
+refactor
+EEPROM.put(eeAddr, virtualservoCollection);
+
+
+
++++++++++++++++++++++ void notifyDccAccTurnoutOutput(uint16_t Addr, uint8_t Direction, uint8_t OutputPower){}+++++++++++++++++++++
+...
+VIRTUALSERVO* targetVirtualServo = nullptr;
+refactor to remove targetVirtualServo.   We can act on the vs object each time we have a match on the address.
+
+
+for (auto& sv : virtualservo)
+refactor as
+for (auto& vs : virtualservoCollection)
+
+Need to add code to act on the OutputPower variable
+Need to add code to handle servos and aspects differently
+
+
+
++++++++++++++++++++++ ROUTE SETTING ++++++++++++
+In JMRI PanelPro, a Route is essentially a stored list of specific turnout positions and sensor states. When you trigger a route,
+PanelPro does not send a single "macro" command to your DCC system; instead, 
+it acts as a sequencer that sends individual switch commands one by one.
+
+Yup, so there is no need to support route setting.  you can do this in panel pro and in fact I would recommend using PP over the DCC_ESP standalone
+approach because if your layout is complex enough to need routes, then its complex enough to require a visual aid such as a track schematic.
+
+
++++++++++++++ washer news +++++++++++++++++++++
+wifi enable washing machine.  why? because we can.
+cannot integrate to the controller, instead we need to use a g-sensor to guess what it is doing.
+but ultimately the only benefit is to let the user know whether it is still running, and estimated time to completion.   kinda pointless because if you are home when its done, you will unload it
+if you are out then you cannot do anything.
+
++++++++++++++ adding routes ++++++++++
+ESP_DCC does not support routes at present because there's not easy way to set them up in the HUI.  the turnout control just supports thrown/closed and a turnout number
+I think we could add a web only interface and you can drive that from ED or a laptop.
+It needs to know the turnouts and how to interlock them.  lets say we limit each route to 5 turnouts, and have 5 routes.  there should be enough RAM left for this.
+The routes themselves will be declared to ED and you can invoke them through the turnout screen.
+
+
+++++++++++ adding consists +++++++++
+you can do ad-hoc consists on ED.  ED will issue commands to two locos to keep them in sync.
+
+
+
+++++++++++ adding boot defaults ++++++++
+Force DCC_ESP to always stay in Service Mode.   i.e. if you want to use it just to control a prog track.  bear in mind that you will not be able to send motion commands or function commands to the loco, because that is a limitation 
+of the DCC spec.
+
+
+
+
+
+
