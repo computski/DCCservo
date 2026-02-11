@@ -199,8 +199,7 @@ struct VIRTUALSERVO {
 
 
 //statemachines and params
-VIRTUALSERVO virtualservo[TOTAL_PINS];
-VIRTUALSERVO* vsBoot = nullptr;
+VIRTUALSERVO virtualservoCollection[TOTAL_PINS];
 
 //servo drivers. This library creates a servo driver (pulse posn modulation) for each of the arduino pins
 Servo servoDriver[TOTAL_PINS];
@@ -277,29 +276,27 @@ void notifyDccAccTurnoutOutput(uint16_t Addr, uint8_t Direction, uint8_t OutputP
 	Serial.print(',');
 	Serial.println(OutputPower, HEX);
 
-	VIRTUALSERVO* targetVirtualServo = nullptr;
 	
 	//strictly, since we are controlling servos, we should ignore any command with OutputPower==0
 
 
-	//act on the data, first locate the appropriate servoslot
-	for (auto& sv : virtualservo) {
-		if (Addr == sv.address) {
-			targetVirtualServo = &sv;
+	//act on the data, finding all matching virtualservos with the given dcc address
+	for (auto& vs : virtualservoCollection) {
+		if (Addr != vs.address) continue;
 			//2020-08-31 execute for EVERY instance of this DCC address,not just the first
 
-			if (targetVirtualServo == nullptr) continue;
 			//take action. 0 is closed, 1 thrown
 			if (Direction == 0) {
-				targetVirtualServo->state = SERVO_TO_CLOSED;
+				vs.state = vs.isServo ? SERVO_TO_CLOSED : ASPECT_CLOSED;
 			}
 			else {
-				targetVirtualServo->state = SERVO_TO_THROWN;
+				vs.state = vs.isServo ? SERVO_TO_THROWN : ASPECT_THROWN;
 			}
-			Serial.print("command sent to pin: ");
-			Serial.println(targetVirtualServo->pin, DEC);
-		}
+			vs.power = OutputPower;
 
+			Serial.print("dcc command to pin: ");
+			Serial.println(vs.pin, DEC);
+						
 	}
 
 	//2020-11-05 process virtual routes.  for these we need to match on pins and issue commands to those
@@ -307,6 +304,8 @@ void notifyDccAccTurnoutOutput(uint16_t Addr, uint8_t Direction, uint8_t OutputP
 
 
 void loop() {
+	static VIRTUALSERVO* vsBoot = nullptr;
+
 	Dcc.process();
 
 	if (FactoryDefaultCVIndex && Dcc.isSetCVReady())
@@ -335,7 +334,7 @@ void loop() {
 
 		//for signal aspects, we move from SERVO_CLOSED or SERVO_THROWN straight to the antiphase, and we pay heed to the .power variable
 
-		for (auto& vs : virtualservo) {
+		for (auto& vs : virtualservoCollection) {
 			uint8_t maxPosition = vs.swing + 90;
 			uint8_t minPosition = 90 - vs.swing;
 
@@ -418,7 +417,7 @@ void loop() {
 				if (vsBoot == nullptr) {
 					//handle next-up servo to boot. servos are booted in the CLOSED position
 					//and aspects are booted with POWER=off
-					vsBoot = &vs;
+					vsBoot = (VIRTUALSERVO*) &vs;
 					bootTimer = 34;
 					if (vs.isServo) {
 						vs.position = vs.invert ? maxPosition : minPosition;
@@ -435,7 +434,7 @@ void loop() {
 					}
 										
 				}
-				else if (vsBoot == &vs) {
+				else if (vsBoot == (VIRTUALSERVO*) &vs) {
 					//if this is the current boot-servo, then decrement bootTimer
 					bootTimer -= bootTimer > 0 ? 1 : 0;
 
@@ -451,8 +450,8 @@ void loop() {
 				break;
 			}
 
+			//update the servo position every 15mS
 			vs.thisDriver->write(vs.position);
-			vs.power = false;
 		}
 
 	}//15ms timer
@@ -463,12 +462,16 @@ void loop() {
 
 	//process serial command
 	if (newData) {
+		//need a temporary virtualservo object
+		VIRTUALSERVO vsParse;
+		//also need a pointer to a servo in virtualservoCollection
+		VIRTUALSERVO* vsPointer = nullptr;
+
 		//Serial.println(receivedChars);
 		newData = false;
 
-		//command a pin,addr,invert
+		//ASPECT set-up command. Usage: a pin,addr,invert
 		if (receivedChars[0] == 'a') {
-			VIRTUALSERVO vsParse;
 			vsParse.isServo = false;
 			vsParse.state = ASPECT_CLOSED;
 
@@ -507,9 +510,10 @@ void loop() {
 			}
 			if (i==4) {
 				Serial.println("OK");
-				//match to a pin member of servoslot and copy it over}
-				for (auto& vs : virtualservo) {
+				//match to a pin member of servoslot and copy it over  
+				for (auto &vs : virtualservoCollection) {
 					if (vs.pin == vsParse.pin) {
+						vsParse.thisDriver = vs.thisDriver;
 						vs = vsParse;  //copy over from vsParse
 						if (vs.thisDriver->attached()) vs.thisDriver->detach();
 						//write to EEPROM
@@ -526,9 +530,8 @@ void loop() {
 		}
 
 
-		//look for command s pin, addr, swing, invert, continuous
+		//SERVO set-up command. Usage: s pin, addr, swing, invert, [continuous]
 		if (receivedChars[0] == 's') {
-			VIRTUALSERVO vsParse;
 			vsParse.isServo = true;
 			vsParse.continuous = false;  //default setting
 
@@ -579,13 +582,13 @@ void loop() {
 			if ((i == 6) || (i==5)) {
 				//[continuous] is optional, accept 5 || 6
 				Serial.println("OK");
-				//match to a pin member of servoslot and copy it over
+				//match to a pin member of virtualservoCollection and copy it over
 
-				for (auto& vs : virtualservo) {
-					if (vs.pin == vsParse.pin) {
+				for (auto& vs : virtualservoCollection) {
+					if (vs.pin != vsParse.pin) continue;
 						//first copy servo-driver pointer to servoParse
 						vsParse.thisDriver = vs.thisDriver;
-						//then copy servoParse to servoslot[]
+						//then copy servoParse to vs
 						vs = vsParse;
 						vs.position = 90;
 						vs.isServo = true;
@@ -594,7 +597,7 @@ void loop() {
 						bootController.isDirty = true;
 						putSettings();
 						exit;
-					}
+					
 				}
 			}
 			else
@@ -605,8 +608,8 @@ void loop() {
 
 		}
 
-		//look for command p pin, c|t|T|n , [power]
-		// where we have closed|thrown|TOGGLE|neutral
+		//PIN ACTION. Usage: p pin, c|t|T|n , [power]
+		// where closed|thrown|TOGGLE|neutral
 		//power is 1|0 and only affects aspects
 		if (receivedChars[0] == 'p') {
 			//detokenize
@@ -614,8 +617,7 @@ void loop() {
 			int i = 0;
 			pch = strtok(receivedChars, " ,");
 			int p = -1;
-			VIRTUALSERVO* targetVirtualServo = nullptr;
-
+			
 			while (pch != NULL) {
 				switch (i) {
 				case 1:
@@ -628,59 +630,53 @@ void loop() {
 						break;
 					}
 					//p is valid, use this to lookup the servoslot
-					for (auto& vs : virtualservo) {
+					for (auto& vs : virtualservoCollection) {
 						if (vs.pin != p) continue;
-						targetVirtualServo = &vs;
+					//use a pointer because we subsequently want to modify the collection item, not copy data to it
+						vsPointer = (VIRTUALSERVO*) &vs;
 					}
-					break;
+					break;	
 
 				case 2:
-					if (targetVirtualServo == nullptr) { i = 10;break; }
+					if (vsPointer == nullptr) { i = 10;break; }
 
-					if (targetVirtualServo->isServo) {
-					switch (pch[0]) {
-					case 'c':
-						targetVirtualServo->state = SERVO_TO_CLOSED;
-						break;
-					case 't':
-						targetVirtualServo->state = SERVO_TO_THROWN;
-						break;
-					case 'n':
-						targetVirtualServo->state = SERVO_NEUTRAL;
-						break;
-					case 'T':
-						if (targetVirtualServo->state == SERVO_CLOSED) {
-							targetVirtualServo->state = SERVO_TO_THROWN;
+					if (vsPointer->isServo) {
+						switch (pch[0]) {
+						case 'c':
+							vsPointer->state = SERVO_TO_CLOSED;
+							break;
+						case 't':
+							vsPointer->state = SERVO_TO_THROWN;
+							break;
+						case 'n':
+							vsPointer->state = SERVO_NEUTRAL;
+							break;
+						case 'T':
+							vsPointer->state = vsPointer->state == SERVO_CLOSED ? SERVO_TO_THROWN : SERVO_TO_CLOSED;
 						}
-						else {
-							targetVirtualServo->state = SERVO_TO_CLOSED;
-						}
-					}
 					}
 					else {
 						//signal aspect. Only supports thrown or closed states
 						switch (pch[0]) {
 						case 't':
-							targetVirtualServo->state = ASPECT_THROWN;
+							vsPointer->state = ASPECT_THROWN;
 							break;
 						case 'T':
-							targetVirtualServo->state = (targetVirtualServo->state == ASPECT_THROWN) ? ASPECT_CLOSED : ASPECT_THROWN;
+							vsPointer->state = (vsPointer->state == ASPECT_THROWN) ? ASPECT_CLOSED : ASPECT_THROWN;
 							break;
 						default:
-							targetVirtualServo->state = ASPECT_CLOSED;
+							vsPointer->state = ASPECT_CLOSED;
 							break;
 						}
 					}
 					break;
 				case 3:
 					//optional [power] param for signal aspects
-					targetVirtualServo->power = pch[0] == '1' ? true : false;
+					vsPointer->power = pch[0] == '1' ? true : false;
 				}
 				
-
 				++i;
 				pch = strtok(NULL, " ,");
-
 			}
 
 			if ((i == 3)||(i==4)) {
@@ -692,79 +688,118 @@ void loop() {
 			}
 
 		}
-		//2020-08-31 emulate a dcc command
-		//d addr,t|n|T|c,[power]
+
+		/*
+		//EMULATE a dcc command.  This will affect multiple servos/aspects for a given dcc address
+		//This version of the code calls notifyDccAccTurnoutOutput, so can only support thrown|closed
+		//usage: d addr,t|c,[power]
 		if (receivedChars[0] == 'd') {
-			VIRTUALSERVO* targetVirtualServo = nullptr;
 
 			char* pch;
 			int i = 0;
 			pch = strtok(receivedChars, " ,");
 			int p = -1;
-			int a = -1;
+			int address = -1;
+			uint8_t isThrown = 0;
+			uint8_t power = 0;
+
 			while (pch != NULL) {
+
 				switch (i) {
 				case 1:
-					//address
-					a = atoi(pch);
-					if ((a < 1) || (a > 2048)) {
+					//resolve address
+					address = atoi(pch);
+					if ((address < 1) || (address > 2048)) {
 						i = 10;
 						Serial.println("bad address");
 						p = -1;
 						break;
 					}
-					//a is valid, use this to execute the servoslot
+					//address valid, use this to match to individual servos
 					break;
 
 				case 2:
-					//command
-					for (auto& targetVirtualServo : virtualservo) {
-						if (targetVirtualServo.address != a) continue;
+					//we can only support thrown|closed in the call to notifyDccAccTurnoutOutput
+					isThrown = pch[0] == 't' ? 1 : 0;
+					break;
 
-						if (targetVirtualServo.isServo) {
-							switch (pch[0]) {
-							case 't':
-								targetVirtualServo.state = SERVO_TO_THROWN;
-								break;
-							case 'n':
-								targetVirtualServo.state = SERVO_NEUTRAL;
-								break;
-							case 'T':
-								if (targetVirtualServo.state == SERVO_CLOSED) {
-									targetVirtualServo.state = SERVO_TO_THROWN;
-								}
-								else {
-									targetVirtualServo.state = SERVO_TO_CLOSED;
-								}
-								break;
-							default:
-								targetVirtualServo.state = SERVO_TO_CLOSED;
-								break;
+				case 3:
+					power = pch[0] == '1' ? true : false;
+					break;
+
+				}
+
+				++i;
+				pch = strtok(NULL, " ,");
+			}//while
+				if ((i == 3) || (i == 4)) {
+					notifyDccAccTurnoutOutput(address, isThrown, power);
+					Serial.println("OK");
+				}
+				else
+				{
+					Serial.println("bad command. usage d address,t|c,[power]");
+				}
+			
+		}
+		*/
+
+
+		//EMULATE a dcc command.  This will affect all servos/aspects on a given dcc address
+		//this code block can support T=toggle and n=neutral, which are not themselves a DCC command
+		//usage: d addr,t|n|T|c,[power]
+		if (receivedChars[0] == 'd') {
+			char* pch;
+			int i = 0;
+			pch = strtok(receivedChars, " ,");
+			int p = -1;
+			int address = -1;
+
+			while (pch != NULL) {
+				switch (i) {
+				case 1:
+					//resolve address
+					address = atoi(pch);
+					if ((address < 1) || (address > 2048)) {
+						i = 10;
+						Serial.println("bad address");
+						p = -1;
+						break;
+					}
+					//address valid, use this to match to individual servos
+					break;
+
+				case 2:
+					//command.  Iterate all servos and execute on all matching addresses
+					for (auto& vs : virtualservoCollection) {
+						if (vs.address != address) continue;
+
+						switch (pch[0]) {
+						case 't':
+							vs.state = vs.isServo ? SERVO_TO_THROWN : ASPECT_THROWN;
+							break;
+						case 'n':
+							vs.state = vs.isServo ? SERVO_NEUTRAL : ASPECT_CLOSED;
+							break;
+						case 'T':
+							if (vs.isServo) {
+								vs.state = (vs.state == SERVO_CLOSED) ? SERVO_TO_THROWN : SERVO_TO_CLOSED;
 							}
-						}
-						else {
-							//2026-02-09 signal aspects. Only supports thrown or closed states
-							switch (pch[0]) {
-							case 't':
-								targetVirtualServo.state = ASPECT_THROWN;
-								break;
-							case 'T':
-								targetVirtualServo.state = (targetVirtualServo.state == ASPECT_THROWN) ? ASPECT_CLOSED : ASPECT_THROWN;
-								break;
-							default:
-								targetVirtualServo.state = ASPECT_CLOSED;
-								break;
+							else {
+								vs.state = (vs.state == ASPECT_THROWN) ? ASPECT_CLOSED : ASPECT_THROWN;
 							}
+							break;
+						default:
+							vs.state = vs.isServo ? SERVO_TO_CLOSED : ASPECT_CLOSED;
 						}
 					}
 					break;
 				case 3:
-					if (targetVirtualServo == nullptr) {
-						i = 10;
-						break;
+					//power.  Iterate all servos and execute on all matching addresses
+					for (auto& vs : virtualservoCollection) {
+						if (vs.address != address) continue;
+						vs.power = pch[0] == '1' ? true : false;
 					}
-					//optional [power] param for signal aspects
-					targetVirtualServo->power = pch[0] == '1' ? true : false;
 					break;
 				}
 				++i;
@@ -781,16 +816,26 @@ void loop() {
 			}
 
 		}
+		
+		//DEBUG block. y will dump power states
+		if (receivedChars[0] == 'y') {
+			for (auto vs : virtualservoCollection) {
+				Serial.print("pin ");
+				Serial.print(vs.pin, DEC);
+				Serial.print("  power ");
+				Serial.println(vs.power, DEC);
+			}
+			Serial.print("\n");
+		}
 
-		//2020-08-31 dump all servos
-		//keep it consistent with s command; pin,addr,swing,invert,continuous
 
+		//DUMP all servo/aspect information
 		if (receivedChars[0] == 'x') {
 
-			for (auto vs : virtualservo) {
+			for (auto vs : virtualservoCollection) {
 				//dump this pin
 				if (vs.isServo){
-				Serial.print("servo pin ");
+				Serial.print("servo  pin ");
 				Serial.print(vs.pin, DEC);
 				Serial.print("  address ");
 				Serial.print(vs.address, DEC);
@@ -800,7 +845,7 @@ void loop() {
 				Serial.print(vs.invert, DEC);
 				Serial.print("  continuous ");
 				Serial.print(vs.continuous, DEC);
-				
+			
 				}
 				else {
 					//dump signal aspects
@@ -812,28 +857,30 @@ void loop() {
 					Serial.print(vs.invert, DEC);
 					Serial.print("  power ");
 					Serial.print(vs.power, DEC);
+				
 				}
 				
 				if (vs.thisDriver == nullptr) {
 					Serial.print(" pointer bad");
 				}
+				else
+				{
+					//dump output state
+					switch (vs.state) {
+					case ASPECT_THROWN:
+					case SERVO_THROWN:
+					case SERVO_TO_THROWN:
+						Serial.print(" thrown");
+						break;
+					default:
+						Serial.print(" closed");
+						break;
+					}
+				
+				}
 				Serial.print("\n");
-
-
 			}
-
-
 		}
-
-		if (receivedChars[0] == 'r') {
-			//establish a virtual route. not supported yet!
-
-
-		}
-
-
-
-
 	}//newData
 
 }//main loop
@@ -883,7 +930,7 @@ void getSettings(void) {
 
 		/*use pin 4 onward. set defaults*/
 		int p = BASE_PIN;
-		for (auto& s : virtualservo) {
+		for (auto& s : virtualservoCollection) {
 			s.pin = p;
 			s.invert = 0;
 			s.position = 90;
@@ -895,14 +942,14 @@ void getSettings(void) {
 			++p;
 		}
 		/*write back default values*/
-		EEPROM.put(eeAddr, virtualservo);
+		EEPROM.put(eeAddr, virtualservoCollection);
 	}
 
 	/*either way, now populate our structs with EEprom values*/
 	eeAddr = 0;
 	EEPROM.get(eeAddr, bootController);
 	eeAddr += sizeof(bootController);
-	EEPROM.get(eeAddr, virtualservo);
+	EEPROM.get(eeAddr, virtualservoCollection);
 
 	/*initialise the pin assignments 4 onwards move all servos to closed position*/
 
@@ -912,7 +959,7 @@ void getSettings(void) {
 	int p = BASE_PIN;
 	int i = 0;
 
-	for (auto& s : virtualservo) {
+	for (auto& s : virtualservoCollection) {
 		s.pin = p;
 		s.state = SERVO_BOOT;
 		//s.position = 90;  //neutral
@@ -953,7 +1000,7 @@ void putSettings(void) {
 	if (bootController.isDirty == false) { return; }
 	EEPROM.put(eeAddr, bootController);
 	eeAddr += sizeof(bootController);
-	EEPROM.put(eeAddr, virtualservo);
+	EEPROM.put(eeAddr, virtualservoCollection);
 	Serial.println("putSettings");
 	bootController.isDirty = false;
 }
