@@ -2,7 +2,7 @@
 // 
 /*
     Name:       DCCservo.ino
-    Created:	24/01/2026 12:46:37 PM
+    Created:	13/02/2026
     Author:     Julian Ossowski
 
 	DEPENDENCIES:
@@ -22,36 +22,42 @@
 	Remember that two or more servos can share the same control signal.  If you do this, you need to be mindful of the mechanical set up
 	because they will all move in the same direction.
 
+	Rate of movement is a new feature.  Useful rate values are +10 to -10, where negative values retard the rate of rotation.
+
+	Signal aspects is a new feature.  A pin can drive high or low or be 'power off'.
+
 	HARDWARE notes:
 	The unit is powered from the track via a rectifier and 1000uF capacitor.
 	pin 2 is the DCC signal.  Enable pullup, as I am using a rectifier to produce 12v power and a pulldown diode 
-	in series with a 1k resistor as the DCC signal take-off.
-	pins 3 to 12 are servo drivers (10)
+	in series with a 5k1k resistor as the DCC signal take-off.
+	pins 3 to 12 are servo drivers (ten in all)
 	pin 13 is the built-in LED, you could disable this and use as a servo output.  I use it as a heartbeat indicator
 	the servo code can handle 12 servos on most boards (incl nano)
 	neutral position is 90 degrees.
 	Closed is defined as minimum position, Thrown as maximum (unless invert = true)
 	The unit only actively drives the servo whilst executing a movement command, once the movement is complete, it disables
-	the servo.  This stops servo chatter, but does assume the servo can hold its position unpowered.
+	the servo.  This stops servo chatter, but does assume the servo can hold its position unpowered.  You can optionally enable
+	continuous powering of the servo.
 	   
 	On eBay there are low cost <Nano expansion board> for sale.  These have 12V DC power jack and lots of header pins which
-	are ideal for servos as they support signal, 5v and gnd.  Its straightforward to plug the nano into one of these and then
-	just jack in the servos.  the 12v rectifier goes to the power socket and the dcc signal to pin 2
+	are ideal for servos as they support signal, 5v and ground, which is common servo pinout.  Its straightforward to plug the nano into
+	one of these and then just jack in the servos.  The 12v rectifier goes to the power socket and the dcc signal to pin 2
 
-	Note there is no need to use an opto isolator if you intend to power this unit from the track. There is one minor niggle
+	There is no need to use an opto isolator if you intend to power this unit from the track. There is one minor niggle
 	with powering it off the track; if you run a loco into a turnout which is set against it, a short circuit results. The
 	command station will cut track power and now you are unable to 'correct' the turnout position.  If the turnout board is driven
 	from a separate DC supply (and opto isolator used) then you could set the turnout correctly and re-establish track power.
 	BUT first this assumes you have a DCC command station with a control bus separate from the power bus, an second it overlooks
 	the situation where many locos have keep alives fitted, so even when track power is cut, the loco carries on and rides over
-	the point set against it and usually derails.   Ain't no fixing that except with your hand!  So why not keep it simple and just
+	the point set against it and usually derails.   Ain't no fixing that except with your hand!  Keep it simple and just
 	power this unit from the track.
 
 
-	COMMANDS.  All commands must be followed with newline:
+	Serial COMMANDS.  All commands must be followed with newline:
+
 	SETUP command for servos is
 	s pin,addr,swing,invert,[continuous]
-	pin is 4-12, addr is 1-2048, swing is 5-180 and invert is 0|1 where 1 inverts the direction.  
+	pin is 4-12, addr is 1-2048 dcc address, swing is 5-180 and invert is 0|1 where 1 inverts the direction.  
 	optional [continuous] 1|0 will ensure continuous servo drive (or not). Default is not.
 
 	SETUP command for signal aspects is
@@ -67,38 +73,31 @@
 
 	DUMP command is x, this will dump current settings to serial.
 	x
-	pin 3  address 0  swing 25  invert 0  continuous 0 pointer good
-	pin 4  address 0  swing 25  invert 0  continuous 0 pointer good
-	pin 5  address 0  aspect invert 0
+	pin 3  address 0  swing 25  invert 0  continuous 0 rate 0 thrown
+	pin 4  address 0  swing 25  invert 0  continuous 0 rate 2 closed
+	pin 5  address 0  aspect invert 0 power 1 closed
 
 
-
-	DCC emulation command, a dcc controller itself can only send t|c, whereas T|n are for our convenience when setting up
+	DCC EMULATION command, a DCC controller itself can only send t|c (and power), whereas T|n are for our convenience when setting up
 	d addr, t|c|T|n, [power]
-	[power] is optional. 1|0 will set the power parameter to on or off for the given pin.
-	
+	[power] is optional. 1|0 will set the power parameter to on or off for the given pin.  Only affects signal aspect pins.
 
-	routes are not supported 
+	RATE command.
+	r pin rate
+	Will increase/retard the rate of rotation of a servo.  useful values are +10 faster through to -10 slower.  The currently 
+	programmed value is displayed via the x command.
 
-	Note on signal aspects:  A pin output can be logic 1|0 based on the throw position.  The pin can also be tristated if power is zero.
+	Further notes:
+	Signal aspects:  A pin output can be logic 1|0 based on the throw position.  The pin can also be tristated if power is zero.
 	i.e. you could have 1= red, 0= white and if power=0 both aspects are off.
 
-
-
-	Note: this unit does not support CV based set up over DCC.  There is no point.  It is easy to set the unit up over
-	serial, and once done you would rarely change it.  DCC is used only to command the turnouts to throw.
+	Routes are not supported.  Use JRMI Panel Pro or an advanced DCC controller.
 	
-	possible FUTURES:
-	Signal aspect control. a pin,addr,invert\n  i.e. a for aspect.  it wil respond to the power on/off commands from DCC, throw/clear will be its digital state
-	i.e. throw sets 1 (unless inverted), clear sets 0.    power on/off is kinda redundant in the spec because it assumes two outputs one for 'thrown' one for 'clear'
-	and then you can activate/deactivate each.  I wonder how Panel Pro deals with it?  It kinda means that a single address actually can support two outputs or aspects, and then
-	each aspect can be driven on/off.
-
-	Add direct pushbutton control.
-	build lighting effects, say on/off control for night lighting/ fires/ welding
-
+	This unit does not support CV based set up over DCC.  There is no point.  It is easy to set-up the unit over
+	serial, and once done you would rarely change it.  DCC is used only to command the turnouts to throw or aspects to change.
+	
 	Why not use arcomora software?  It won't fit into a nano with a standard bootloader.
-	I also considered it too complex to set up.  Also its not clear if it can support the simple 
+	I also consider it too complex to set up.  Also its not clear if it can support the simple 
 	solution used here where the nano is plugged direct into a low cost expansion board.
 
 
@@ -106,11 +105,6 @@
 	https://github.com/nzin/arduinodcc/tree/master/arduinoSource/dccduino
 	https://rudysmodelrailway.wordpress.com/2015/01/25/new-arduino-dcc-servo-and-function-decoder-software/
 	https://www.arcomora.com/mardec/
-
-
-
-	2026-02-09 CHECK.  we are using aspects now also.  therefore I don't want to use a serverDriver, but what does this mean for converting the pin to a 
-	regular servo, we need to reattach the driver, right? 
 
 	
 */
@@ -146,7 +140,7 @@ uint8_t FactoryDefaultCVIndex = 0;
 /*EEprom and version control*/
 struct CONTROLLER
 {
-	long softwareVersion = 20260209;  //yyyymmdd captured as an integer
+	long softwareVersion = 20260213;  //yyyymmdd captured as an integer
 	bool isDirty = false;  //will be true if eeprom needs a write
 	long long padding;
 };
@@ -194,6 +188,8 @@ struct VIRTUALSERVO {
 	bool isServo;  //servo or aspect
 	uint8_t state;
 	uint8_t position;
+	int8_t rate;  //+ve values speed up movement, -ve slow it down
+	int8_t timeDelay;  //working register, loaded negative and counts up to zero
 	Servo* thisDriver;
 };
 
@@ -217,9 +213,7 @@ void setup() {
 
 	//restore virtualservo array from EEPROM
 	getSettings();
-	Serial.println("boot\n");
 	pinMode(LED_BUILTIN, OUTPUT);
-
 
 	//DCC, setup which External Interrupt, the Pin it's associated with that we're using and enable the Pull-Up 
 	//for my circuit, dcc is active low through a pulldown diode and a series 5k1k res, hence need the pull-up
@@ -228,8 +222,8 @@ void setup() {
 
 	// Call the main DCC Init function to enable the DCC Receiver
 	Dcc.init(MAN_ID_DIY, 10, CV29_ACCESSORY_DECODER | CV29_OUTPUT_ADDRESS_MODE, 0);
-	Serial.println("DCC Init Done");
-	Serial.println("Commands are s p x d a");
+	Serial.println("DCC initialised");
+	Serial.println("Commands are s p x d a r\n");
 
 }
 
@@ -276,9 +270,6 @@ void notifyDccAccTurnoutOutput(uint16_t Addr, uint8_t Direction, uint8_t OutputP
 	Serial.print(',');
 	Serial.println(OutputPower, HEX);
 
-	
-	//strictly, since we are controlling servos, we should ignore any command with OutputPower==0
-
 
 	//act on the data, finding all matching virtualservos with the given dcc address
 	for (auto& vs : virtualservoCollection) {
@@ -295,11 +286,9 @@ void notifyDccAccTurnoutOutput(uint16_t Addr, uint8_t Direction, uint8_t OutputP
 			vs.power = OutputPower;
 
 			Serial.print("dcc command to pin: ");
-			Serial.println(vs.pin, DEC);
-						
+			Serial.println(vs.pin, DEC);					
 	}
 
-	//2020-11-05 process virtual routes.  for these we need to match on pins and issue commands to those
 }
 
 
@@ -328,31 +317,41 @@ void loop() {
 			if (!ledState) digitalWrite(LED_BUILTIN, LOW);
 		}
 
-
 		//update all moving servos every 15mS
 		//in normal non-invert mode, minPosition is turnout closed, and maxPosition is turnout thrown
 
-		//for signal aspects, we move from SERVO_CLOSED or SERVO_THROWN straight to the antiphase, and we pay heed to the .power variable
+		//for signal aspects, we move from ASPECT_CLOSED or ASPECT_THROWN straight to the antiphase, and we pay heed to the .power parameter
 
 		for (auto& vs : virtualservoCollection) {
 			uint8_t maxPosition = vs.swing + 90;
 			uint8_t minPosition = 90 - vs.swing;
+
+			//Servo rotation rates. +ve rate values will speed up movement by increasing the movement increment above 1
+			uint8_t increment = vs.rate>0 ? vs.rate:1;
+			//.timeDelay is used for -ve rate values
+			vs.timeDelay += vs.timeDelay < 0 ? 1 : 0;
+
 
 			switch (vs.state) {
 			case SERVO_NEUTRAL:
 				vs.position = 90;
 				if (!vs.thisDriver->attached()) vs.thisDriver->attach(vs.pin);
 				break;
+
 			case SERVO_TO_CLOSED:
+				//-ve rotation rate values will slow down movement
+				if (vs.timeDelay != 0) break;
+				vs.timeDelay = vs.rate < 0 ? vs.rate : 0;
+
 				//swing toward minPosition, unless invert is true
 				if (vs.invert) {
-					vs.position += vs.position < maxPosition ? 1 : 0;
+					vs.position += vs.position < maxPosition ? increment : 0;
 				}
 				else {
-					vs.position -= vs.position > minPosition ? 1 : 0;
+					vs.position -= vs.position > minPosition ? increment : 0;
 				}
 
-				if ((vs.position == maxPosition) || (vs.position == minPosition)) {
+				if ((vs.position >= maxPosition) || (vs.position <= minPosition)) {
 					vs.state = SERVO_CLOSED;
 				}
 
@@ -360,15 +359,19 @@ void loop() {
 				break;
 
 			case SERVO_TO_THROWN:
+				//-ve roation rate values will slow down movement
+				if (vs.timeDelay != 0) break;
+				vs.timeDelay = vs.rate < 0 ? vs.rate : 0;
+
 				//swing toward maxPosition unless invert is true
 				if (vs.invert) {
-					vs.position -= vs.position > minPosition ? 1 : 0;
+					vs.position -= vs.position > minPosition ? increment : 0;
 				}
 				else {
-					vs.position += vs.position < maxPosition ? 1 : 0;
+					vs.position += vs.position < maxPosition ? increment : 0;
 				}
 
-				if ((vs.position == maxPosition) || (vs.position == minPosition)) {
+				if ((vs.position >= maxPosition) || (vs.position <= minPosition)) {
 					vs.state = SERVO_THROWN;
 				}
 
@@ -425,8 +428,8 @@ void loop() {
 						vs.thisDriver->write(vs.position);
 					}
 					else {
-						//aspect. Immediately go to closed state with power on
-						vs.power = true;
+						//aspect. Immediately go to closed state with power off
+						vs.power = false;
 						vs.state = ASPECT_CLOSED;
 						vsBoot = nullptr;
 						bootTimer = 0;
@@ -508,10 +511,10 @@ void loop() {
 				pch = strtok(NULL, " ,");
 
 			}
-			if (i==4) {
+			if (i == 4) {
 				Serial.println("OK");
 				//match to a pin member of servoslot and copy it over  
-				for (auto &vs : virtualservoCollection) {
+				for (auto& vs : virtualservoCollection) {
 					if (vs.pin == vsParse.pin) {
 						vsParse.thisDriver = vs.thisDriver;
 						vs = vsParse;  //copy over from vsParse
@@ -523,7 +526,8 @@ void loop() {
 					}
 				}
 
-			}else{
+			}
+			else {
 				Serial.println("bad command. usage a pin,addr,invert");
 			}
 
@@ -579,25 +583,25 @@ void loop() {
 
 			}
 
-			if ((i == 6) || (i==5)) {
+			if ((i == 6) || (i == 5)) {
 				//[continuous] is optional, accept 5 || 6
 				Serial.println("OK");
 				//match to a pin member of virtualservoCollection and copy it over
 
 				for (auto& vs : virtualservoCollection) {
 					if (vs.pin != vsParse.pin) continue;
-						//first copy servo-driver pointer to servoParse
-						vsParse.thisDriver = vs.thisDriver;
-						//then copy servoParse to vs
-						vs = vsParse;
-						vs.position = 90;
-						vs.isServo = true;
-						vs.state = SERVO_TO_CLOSED;
-						//write to EEPROM
-						bootController.isDirty = true;
-						putSettings();
-						exit;
-					
+					//first copy servo-driver pointer to servoParse
+					vsParse.thisDriver = vs.thisDriver;
+					//then copy servoParse to vs
+					vs = vsParse;
+					vs.position = 90;
+					vs.isServo = true;
+					vs.state = SERVO_TO_CLOSED;
+					//write to EEPROM
+					bootController.isDirty = true;
+					putSettings();
+					exit;
+
 				}
 			}
 			else
@@ -617,7 +621,7 @@ void loop() {
 			int i = 0;
 			pch = strtok(receivedChars, " ,");
 			int p = -1;
-			
+
 			while (pch != NULL) {
 				switch (i) {
 				case 1:
@@ -632,10 +636,10 @@ void loop() {
 					//p is valid, use this to lookup the servoslot
 					for (auto& vs : virtualservoCollection) {
 						if (vs.pin != p) continue;
-					//use a pointer because we subsequently want to modify the collection item, not copy data to it
-						vsPointer = (VIRTUALSERVO*) &vs;
+						//use a pointer because we subsequently want to modify the collection item, not copy data to it
+						vsPointer = (VIRTUALSERVO*)&vs;
 					}
-					break;	
+					break;
 
 				case 2:
 					if (vsPointer == nullptr) { i = 10;break; }
@@ -674,12 +678,12 @@ void loop() {
 					//optional [power] param for signal aspects
 					vsPointer->power = pch[0] == '1' ? true : false;
 				}
-				
+
 				++i;
 				pch = strtok(NULL, " ,");
 			}
 
-			if ((i == 3)||(i==4)) {
+			if ((i == 3) || (i == 4)) {
 				Serial.println("OK");
 			}
 			else
@@ -740,7 +744,7 @@ void loop() {
 				{
 					Serial.println("bad command. usage d address,t|c,[power]");
 				}
-			
+
 		}
 		*/
 
@@ -807,7 +811,7 @@ void loop() {
 
 			}
 
-			if ((i == 3)||(i==4)) {
+			if ((i == 3) || (i == 4)) {
 				Serial.println("OK");
 			}
 			else
@@ -816,7 +820,7 @@ void loop() {
 			}
 
 		}
-		
+
 		//DEBUG block. y will dump power states
 		if (receivedChars[0] == 'y') {
 			for (auto vs : virtualservoCollection) {
@@ -828,24 +832,77 @@ void loop() {
 			Serial.print("\n");
 		}
 
+		//RATE command. sets a positive or negative rate on the servo swing.
+		//usage r pin rate, where rate is + or -ve integer, useful values are -10 to +10
+		if (receivedChars[0] == 'r') {
+			char* pch;
+			int i = 0;
+			pch = strtok(receivedChars, " ,");
+			int p = -1;
+			int rate = 0;
+
+			while (pch != NULL) {
+				switch (i) {
+				case 1:
+					p = atoi(pch);
+					if ((p < BASE_PIN) || (p >= BASE_PIN + TOTAL_PINS)) {
+						i = 10;
+						Serial.println("bad pin");
+						p = -1;
+						break;
+					}
+					//p is valid, use this to lookup the servoslot
+					for (auto& vs : virtualservoCollection) {
+						if (vs.pin != p) continue;
+						//use a pointer because we subsequently want to modify the collection item, not copy data to it
+						vsPointer = (VIRTUALSERVO*)&vs;
+					}
+					break;
+
+				case 2:
+					//resolve rate
+					rate = atoi(pch);
+					if (rate > 10) rate = 10;
+					if (rate < -10) rate = -10;
+					//note improperly formed numbers such as -7.7 or 'three' will resolve to zero
+					break;
+				}
+
+				++i;
+				pch = strtok(NULL, " ,");
+			}
+
+			if (i == 3) {
+				Serial.println("OK");
+				vsPointer->rate = rate;
+			}
+			else
+			{
+				Serial.println("bad command. usage r pin rate");
+				Serial.println(i, DEC);
+			}
+		}
+
 
 		//DUMP all servo/aspect information
 		if (receivedChars[0] == 'x') {
 
 			for (auto vs : virtualservoCollection) {
 				//dump this pin
-				if (vs.isServo){
-				Serial.print("servo  pin ");
-				Serial.print(vs.pin, DEC);
-				Serial.print("  address ");
-				Serial.print(vs.address, DEC);
-				Serial.print("  swing ");
-				Serial.print(vs.swing, DEC);
-				Serial.print("  invert ");
-				Serial.print(vs.invert, DEC);
-				Serial.print("  continuous ");
-				Serial.print(vs.continuous, DEC);
-			
+				if (vs.isServo) {
+					Serial.print("servo  pin ");
+					Serial.print(vs.pin, DEC);
+					Serial.print("  address ");
+					Serial.print(vs.address, DEC);
+					Serial.print("  swing ");
+					Serial.print(vs.swing, DEC);
+					Serial.print("  invert ");
+					Serial.print(vs.invert, DEC);
+					Serial.print("  continuous ");
+					Serial.print(vs.continuous, DEC);
+					Serial.print("  rate ");
+					Serial.print(vs.rate, DEC);
+
 				}
 				else {
 					//dump signal aspects
@@ -857,9 +914,9 @@ void loop() {
 					Serial.print(vs.invert, DEC);
 					Serial.print("  power ");
 					Serial.print(vs.power, DEC);
-				
+
 				}
-				
+
 				if (vs.thisDriver == nullptr) {
 					Serial.print(" pointer bad");
 				}
@@ -876,13 +933,13 @@ void loop() {
 						Serial.print(" closed");
 						break;
 					}
-				
+
 				}
 				Serial.print("\n");
 			}
 		}
-	}//newData
-
+		
+	}
 }//main loop
 
 
@@ -939,6 +996,7 @@ void getSettings(void) {
 			s.state = SERVO_BOOT;
 			s.power = false;
 			s.isServo = true;
+			s.rate = 0;
 			++p;
 		}
 		/*write back default values*/
@@ -953,28 +1011,30 @@ void getSettings(void) {
 
 	/*initialise the pin assignments 4 onwards move all servos to closed position*/
 
-	/*2020-10-29 seems little point moving all servos to mid point then moving all to closed.  will just boot
-	as closed*/
-
+	
 	int p = BASE_PIN;
 	int i = 0;
 
-	for (auto& s : virtualservoCollection) {
-		s.pin = p;
-		s.state = SERVO_BOOT;
+	for (auto& vs : virtualservoCollection) {
+		vs.pin = p;
+		vs.state = SERVO_BOOT;
 		//s.position = 90;  //neutral
 		/*minimum useful swing is 5 degrees*/
-		if ((s.swing < 5) || (s.swing > 90)) s.swing = 5;
+		if ((vs.swing < 5) || (vs.swing > 90)) vs.swing = 5;
 
 		//calculate closed posn (we may be inverted) then back off 5 degrees and set that as posn
-		if (s.invert) {
+		if (vs.invert) {
 			//max position
-			s.position = 90 + s.swing - 5;
+			vs.position = 90 + vs.swing - 5;
 		}
 		else {
 			//min position, normal for closed
-			s.position = 90 - s.swing + 5;
+			vs.position = 90 - vs.swing + 5;
 		}
+
+		//2026-02-13 for some reason, address data is corrupt when reading back
+		//try masking out irrelevant bits.  FFF allows 2048d, whereas 7FF allows upto 2047d
+		vs.address &= 0xFFF;
 
 
 		//initialise the servo driver
@@ -982,7 +1042,7 @@ void getSettings(void) {
 			//servoDriver[i].write(s.position);
 			//2020-11-09 we don't want to attach at this time as it will asert an unhelpful position
 		servoDriver[i].detach();
-		s.thisDriver = &servoDriver[i];
+		vs.thisDriver = &servoDriver[i];
 		++p;
 		++i;
 	}
