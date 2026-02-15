@@ -8,6 +8,8 @@ one or more servos can be assigned the same DCC address.  useful for crossovers 
 Remember that two or more servos can share the same control signal.  If you do this, you need to be mindful of the mechanical set up
 because they will all move in the same direction.
 
+Software now supports signal aspects, giving a solid logic 1|0 for thrown|closed or the inverted version of this.
+
 HARDWARE notes:
 The unit is powered from the track via a rectifier and 1000uF capacitor.
 pin 2 is the DCC signal.  Enable pullup, as I am using a rectifier to produce 12v power and a pulldown diode 
@@ -35,20 +37,28 @@ power this unit from the track.
 
 
 COMMANDS:
-SET-UP command is
-s pin,addr,swing,invert\n
-pin is 4-12, addr is 1-2048, swing is 5-180 and invert is 0|1 where 1 inverts the direction.
+SERVO SET-UP command is: s pin,addr,swing,invert,[continuous]
+pin is 4-12, addr is 1-2048, swing is 5-180 and invert is 0|1 where 1 inverts the direction. Optional continuous (default 0) will keep drive
+active after movement has ceased.
 
-EXECUTE command is
-p pin, c|t|n|T \n
+ASPECT SET-UP command is: a pin,addr,invert,[ignorePower]
+pin is 4-12, addr is 1-204, invert is 0|1 and optional ignorePower (default 1) will ignore DCC power parameter and instead is always powered on.
+
+PIN command is: p pin, c|t|n|T
 pin is 4-12, c|t|n|T correspond to closed, thrown, neutral, Toggle.x
-
 Once a pin is mapped to a DCC address, it will respond to that DCC turnout.
 
-DUMP command is x, this will dump current settings to serial
-x \n
+RATE command is: r pin,rate
+pin is 4-12, rate is -10 to +10 where negative values retard rate of servo rotation.  Command has no effect on aspects.
 
-DCC EMULATION command, a dcc controller itself can only send t|c, whereas T|n are for our convenience when setting up
-d addr t|c|T|n\n
+DCC EMULATION command is:d addr t|c|T|n, [power]
+Simulates a DCC command from the controller. A dcc controller itself can only send t|c, whereas T|n are for our convenience when setting up
+providing Toggle and neutral.  Optional power will power/depower a signal aspect
+
+DUMP command is: x, this will dump current settings to serial
+
+VERBOSE command is: v, this will dump incoming DCC messages to serial.  reverts to verbose OFF at boot.
 
 routes are not supported 
+
+
