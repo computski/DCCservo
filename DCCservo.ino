@@ -1,8 +1,8 @@
-// Visual Micro is in vMicro>General>Tutorial Mode
+// 
 // 
 /*
     Name:       DCCservo.ino
-    Created:	13/02/2026
+    Created:	15/02/2026
     Author:     Julian Ossowski
 
 	DEPENDENCIES:
@@ -24,7 +24,7 @@
 
 	Rate of movement is a new feature.  Useful rate values are +10 to -10, where negative values retard the rate of rotation.
 
-	Signal aspects is a new feature.  A pin can drive high or low or be 'power off'.
+	Signal aspects is a new feature.  A pin can drive high or low or be 'power off' as in tri-stated.
 
 	HARDWARE notes:
 	The unit is powered from the track via a rectifier and 1000uF capacitor.
@@ -61,8 +61,11 @@
 	optional [continuous] 1|0 will ensure continuous servo drive (or not). Default is not.
 
 	SETUP command for signal aspects is
-	a pin,addr,invert
+	a pin,addr,invert,[ignorePower]
 	Note that setting up [a] against a pin will override [p] and vice-versa
+	pin is 4-12, addr is 1-2048 dcc address, invert is 0|1 where 1 inverts the pin logic level.  Normally thrown is a logic 1 on the pin.
+	optional ignorePower defaults to 1=yes.  This prevents the unit from responding to the 'off' message that JRMI panel pro sends, which would 
+	depower the pin output (makes it tri-state).
 
 	EXECUTE command is
 	p pin, c|t|n|T, [power]
@@ -86,6 +89,11 @@
 	r pin rate
 	Will increase/retard the rate of rotation of a servo.  useful values are +10 faster through to -10 slower.  The currently 
 	programmed value is displayed via the x command.
+
+	VERBOSE command.
+	v
+	Will dump incoming DCC commands to serial. Useful to confirm hardware is receiving DCC and able to match to an address set up
+	in the unit.  verbose=OFF on boot.  Dumping DCC to serial might cause delay in execution of commands.
 
 	Further notes:
 	Signal aspects:  A pin output can be logic 1|0 based on the throw position.  The pin can also be tristated if power is zero.
@@ -135,12 +143,12 @@ CVPair FactoryDefaultCVs[] =
 };
 
 uint8_t FactoryDefaultCVIndex = 0;
-
+bool verbose=false;
 
 /*EEprom and version control*/
 struct CONTROLLER
 {
-	long softwareVersion = 20260213;  //yyyymmdd captured as an integer
+	long softwareVersion = 20260215;  //yyyymmdd captured as an integer
 	bool isDirty = false;  //will be true if eeprom needs a write
 	long long padding;
 };
@@ -185,6 +193,7 @@ struct VIRTUALSERVO {
 	bool invert;
 	bool continuous;
 	bool power;
+	bool ignorePowerParameter;
 	bool isServo;  //servo or aspect
 	uint8_t state;
 	uint8_t position;
@@ -223,7 +232,7 @@ void setup() {
 	// Call the main DCC Init function to enable the DCC Receiver
 	Dcc.init(MAN_ID_DIY, 10, CV29_ACCESSORY_DECODER | CV29_OUTPUT_ADDRESS_MODE, 0);
 	Serial.println("DCC initialised");
-	Serial.println("Commands are s p x d a r\n");
+	Serial.println("Commands are s p x d a r v\n");
 
 }
 
@@ -243,6 +252,7 @@ void notifyDccMsg(DCC_MSG * Msg)
 // This function is called whenever a normal DCC Turnout Packet is received and we're in Board Addressing Mode
 void notifyDccAccTurnoutBoard(uint16_t BoardAddr, uint8_t OutputPair, uint8_t Direction, uint8_t OutputPower)
 {
+	if (!verbose) return;
 	Serial.print("notifyDccAccTurnoutBoard: ");
 	Serial.print(BoardAddr, DEC);
 	Serial.print(',');
@@ -263,32 +273,37 @@ void notifyDccAccTurnoutBoard(uint16_t BoardAddr, uint8_t OutputPair, uint8_t Di
 /// <param name="OutputPower">1 denotes power on, 0 power off.  Useful for signal aspects.  Solenoids and servos will ignore the off command.</param>
 void notifyDccAccTurnoutOutput(uint16_t Addr, uint8_t Direction, uint8_t OutputPower)
 {
-	Serial.print("notifyDccAccTurnoutOutput: ");
-	Serial.print(Addr, DEC);
-	Serial.print(',');
-	Serial.print(Direction, DEC);
-	Serial.print(',');
-	Serial.println(OutputPower, HEX);
-
+	if (verbose) {
+		Serial.print("notifyDccAccTurnoutOutput: ");
+		Serial.print(Addr, DEC);
+		Serial.print(',');
+		Serial.print(Direction, DEC);
+		Serial.print(',');
+		Serial.println(OutputPower, HEX);
+	}
 
 	//act on the data, finding all matching virtualservos with the given dcc address
 	for (auto& vs : virtualservoCollection) {
 		if (Addr != vs.address) continue;
-			//2020-08-31 execute for EVERY instance of this DCC address,not just the first
+		//execute for EVERY instance of this DCC address,not just the first
+		//for servos, ignore any power-off instruction
+		vs.power = OutputPower == 0 ? false : true;
 
-			//take action. 0 is closed, 1 thrown
-			if (Direction == 0) {
-				vs.state = vs.isServo ? SERVO_TO_CLOSED : ASPECT_CLOSED;
-			}
-			else {
-				vs.state = vs.isServo ? SERVO_TO_THROWN : ASPECT_THROWN;
-			}
-			vs.power = OutputPower;
+		//take action. Direction 0 is closed, 1 thrown
+		if (vs.isServo) {
+			if (!vs.power) continue;  //ignore 'off' commands to servos
+			vs.state = Direction == 0 ? SERVO_TO_CLOSED : SERVO_TO_THROWN;
+		}
+		else {
+			vs.state = Direction == 0 ? ASPECT_CLOSED : ASPECT_THROWN;
+		}
 
+		if (verbose) {
 			Serial.print("dcc command to pin: ");
-			Serial.println(vs.pin, DEC);					
+			Serial.println(vs.pin, DEC);
+		}
 	}
-
+	
 }
 
 
@@ -392,7 +407,7 @@ void loop() {
 				break;
 
 			case ASPECT_CLOSED:
-				if (vs.power) {
+				if ((vs.power)||(vs.ignorePowerParameter)) {
 					//actively drive the pin. Thrown is a high state unless invert is active
 					pinMode(vs.pin, OUTPUT);
 					digitalWrite(vs.pin, vs.invert? HIGH:LOW);
@@ -404,7 +419,7 @@ void loop() {
 				break;
 
 			case ASPECT_THROWN:
-				if (vs.power) {
+				if ((vs.power)||(vs.ignorePowerParameter)){
 					//actively drive the pin. Thrown is a high state unless invert is active
 					pinMode(vs.pin, OUTPUT);
 					digitalWrite(vs.pin, vs.invert ? LOW : HIGH);
@@ -473,7 +488,8 @@ void loop() {
 		//Serial.println(receivedChars);
 		newData = false;
 
-		//ASPECT set-up command. Usage: a pin,addr,invert
+		//ASPECT set-up command. Usage: a pin,addr,invert,[ignorePower]
+		//ignorePower is default true and will ignore dcc power off commands
 		if (receivedChars[0] == 'a') {
 			vsParse.isServo = false;
 			vsParse.state = ASPECT_CLOSED;
@@ -504,6 +520,11 @@ void loop() {
 
 				case 3:
 					vsParse.invert = atoi(pch) == 0 ? false : true;
+					vsParse.ignorePowerParameter = true;  //default
+					break;
+
+				case 4:
+					vsParse.ignorePowerParameter = atoi(pch) == 0 ? false : true;
 					break;
 				}
 
@@ -511,7 +532,7 @@ void loop() {
 				pch = strtok(NULL, " ,");
 
 			}
-			if (i == 4) {
+			if ((i == 4)||(i==5)) {
 				Serial.println("OK");
 				//match to a pin member of servoslot and copy it over  
 				for (auto& vs : virtualservoCollection) {
@@ -522,13 +543,13 @@ void loop() {
 						//write to EEPROM
 						bootController.isDirty = true;
 						putSettings();
-						exit;
+						break;
 					}
 				}
 
 			}
 			else {
-				Serial.println("bad command. usage a pin,addr,invert");
+				Serial.println("bad command. usage a pin,addr,invert,[ignorePower]");
 			}
 
 		}
@@ -537,6 +558,7 @@ void loop() {
 		//SERVO set-up command. Usage: s pin, addr, swing, invert, [continuous]
 		if (receivedChars[0] == 's') {
 			vsParse.isServo = true;
+			vsParse.ignorePowerParameter = true;
 			vsParse.continuous = false;  //default setting
 
 			//detokenize
@@ -600,8 +622,7 @@ void loop() {
 					//write to EEPROM
 					bootController.isDirty = true;
 					putSettings();
-					exit;
-
+					break;
 				}
 			}
 			else
@@ -693,63 +714,8 @@ void loop() {
 
 		}
 
-		/*
-		//EMULATE a dcc command.  This will affect multiple servos/aspects for a given dcc address
-		//This version of the code calls notifyDccAccTurnoutOutput, so can only support thrown|closed
-		//usage: d addr,t|c,[power]
-		if (receivedChars[0] == 'd') {
 
-			char* pch;
-			int i = 0;
-			pch = strtok(receivedChars, " ,");
-			int p = -1;
-			int address = -1;
-			uint8_t isThrown = 0;
-			uint8_t power = 0;
-
-			while (pch != NULL) {
-
-				switch (i) {
-				case 1:
-					//resolve address
-					address = atoi(pch);
-					if ((address < 1) || (address > 2048)) {
-						i = 10;
-						Serial.println("bad address");
-						p = -1;
-						break;
-					}
-					//address valid, use this to match to individual servos
-					break;
-
-				case 2:
-					//we can only support thrown|closed in the call to notifyDccAccTurnoutOutput
-					isThrown = pch[0] == 't' ? 1 : 0;
-					break;
-
-				case 3:
-					power = pch[0] == '1' ? true : false;
-					break;
-
-				}
-
-				++i;
-				pch = strtok(NULL, " ,");
-			}//while
-				if ((i == 3) || (i == 4)) {
-					notifyDccAccTurnoutOutput(address, isThrown, power);
-					Serial.println("OK");
-				}
-				else
-				{
-					Serial.println("bad command. usage d address,t|c,[power]");
-				}
-
-		}
-		*/
-
-
-		//EMULATE a dcc command.  This will affect all servos/aspects on a given dcc address
+		//EMULATE a dcc command.  This will affect all servos/aspects at a given dcc address
 		//this code block can support T=toggle and n=neutral, which are not themselves a DCC command
 		//usage: d addr,t|n|T|c,[power]
 		if (receivedChars[0] == 'd') {
@@ -875,12 +841,28 @@ void loop() {
 			if (i == 3) {
 				Serial.println("OK");
 				vsPointer->rate = rate;
+				bootController.isDirty = true;
+				putSettings();
 			}
 			else
 			{
 				Serial.println("bad command. usage r pin rate");
 				Serial.println(i, DEC);
 			}
+		}
+
+		//Toggle VERBOSE serial output
+		//if verbose = ON then incoming DCC commands are dumped to serial, which can slow down processing
+		if (receivedChars[0] == 'v') {
+			if (verbose) {
+				Serial.println("verbose OFF\n");
+				verbose = false;
+			}
+			else {
+				Serial.println("verbose ON\n");
+				verbose = true;
+			}
+
 		}
 
 
@@ -913,7 +895,8 @@ void loop() {
 					Serial.print("  invert ");
 					Serial.print(vs.invert, DEC);
 					Serial.print("  power ");
-					Serial.print(vs.power, DEC);
+					if (vs.ignorePowerParameter) { Serial.print("x"); }
+					else { Serial.print(vs.power, DEC); }
 
 				}
 
@@ -938,7 +921,12 @@ void loop() {
 				Serial.print("\n");
 			}
 		}
-		
+	
+		//EEPROM test.  verifies all locations work. But will destroy all user data and
+		//fill EEPROM with junk.  You must reboot after this test to reinitialise EEPROM.
+		if (receivedChars[0] == 'E') EEpromTest();
+
+
 	}
 }//main loop
 
@@ -978,25 +966,29 @@ void recvWithEndMarker() {
 
 void getSettings(void) {
 	int eeAddr = 0;
+	bool factory = false;
 	EEPROM.get(eeAddr, bootController);
 	if (m_defaultController.softwareVersion != bootController.softwareVersion) {
 		/*If software version has changed, we need to re-initiatise eeprom with factory defaults*/
 		Serial.println("restore factory defaults");
+		factory = true;
 		EEPROM.put(0, m_defaultController);
-		eeAddr += sizeof(m_defaultController);
+		//eeAddr += sizeof(m_defaultController);
+		eeAddr = 32; //bug fix
 
 		/*use pin 4 onward. set defaults*/
 		int p = BASE_PIN;
-		for (auto& s : virtualservoCollection) {
-			s.pin = p;
-			s.invert = 0;
-			s.position = 90;
-			s.swing = 25;
-			s.continuous = 0;
-			s.state = SERVO_BOOT;
-			s.power = false;
-			s.isServo = true;
-			s.rate = 0;
+		for (auto& vs : virtualservoCollection) {
+			vs.pin = p;
+			vs.invert = 0;
+			vs.position = 90;
+			vs.swing = 25;
+			vs.continuous = 0;
+			vs.state = SERVO_BOOT;
+			vs.power = false;
+			vs.ignorePowerParameter = true;
+			vs.isServo = true;
+			vs.rate = 0;
 			++p;
 		}
 		/*write back default values*/
@@ -1006,12 +998,11 @@ void getSettings(void) {
 	/*either way, now populate our structs with EEprom values*/
 	eeAddr = 0;
 	EEPROM.get(eeAddr, bootController);
-	eeAddr += sizeof(bootController);
+	//eeAddr += sizeof(bootController);
+	eeAddr = 32; //bug fix
 	EEPROM.get(eeAddr, virtualservoCollection);
 
-	/*initialise the pin assignments 4 onwards move all servos to closed position*/
-
-	
+	//initialise the pin assignments 4 onwards move all servos and aspects to closed position
 	int p = BASE_PIN;
 	int i = 0;
 
@@ -1032,7 +1023,7 @@ void getSettings(void) {
 			vs.position = 90 - vs.swing + 5;
 		}
 
-		//2026-02-13 for some reason, address data is corrupt when reading back
+		//2026-02-13 for some reason, address data is corrupt when reading back pin 3 parameters.
 		//try masking out irrelevant bits.  FFF allows 2048d, whereas 7FF allows upto 2047d
 		vs.address &= 0xFFF;
 
@@ -1047,21 +1038,69 @@ void getSettings(void) {
 		++i;
 	}
 	Serial.print("\nsofware version ");
-	Serial.print(bootController.softwareVersion, DEC);
-
+	Serial.println(bootController.softwareVersion, DEC);
+	if (factory) Serial.println("factory");
 	Serial.println("\n.............\n");
 
 }
 
 
 //putSettings writes to EEPROM. to reduce wear only call if a change has been made
+//2026-01-15 bug fix.  Even though eeAddr += sizeof(bootController); should work, it seems there's a bug which causes pin 3 or pin 4 settings to scramble on power cycle.
+//possibly because sizeof(bootController) and sizeof(m_defaultController) are not always the same 13 bytes.  Fix is to just hardcode virtualservoCollection to start at
+//location 32.
 void putSettings(void) {
 	int eeAddr = 0;
 	if (bootController.isDirty == false) { return; }
 	EEPROM.put(eeAddr, bootController);
-	eeAddr += sizeof(bootController);
+
+	//eeAddr += sizeof(bootController);
+	eeAddr = 32;  //bug fix
 	EEPROM.put(eeAddr, virtualservoCollection);
 	Serial.println("putSettings");
 	bootController.isDirty = false;
 }
 
+/// <summary>
+/// write and verify every EEPROM location.  This wipes all prior user data
+/// use this routine via the E command if your nano seems to have corrupt
+/// readback of the user settings.  Any bad locations will be listed.
+/// </summary>
+void EEpromTest(void) {
+	int addr = 0;
+	int eepromSize = EEPROM.length();
+
+	unsigned char write_data=0b10101010;
+	unsigned char read_data;
+	Serial.print("EEPROM test ");
+	Serial.println(eepromSize, DEC);
+	Serial.println("Writing 0xAA");
+	for (addr=0;addr<eepromSize;addr++) EEPROM.write(addr, write_data);
+
+	//verify
+	for (addr = 0; addr < eepromSize; addr++)
+	{
+		read_data = EEPROM.read(addr);
+		if (read_data != write_data) {
+			Serial.print("bad ");
+			Serial.println(addr, DEC);
+		}
+
+	}
+	Serial.println("Writing 0x55");
+	write_data = 0x55;
+	for (addr = 0;addr < eepromSize;addr++) EEPROM.write(addr, write_data);
+
+	//verify
+	for (addr = 0; addr < eepromSize; addr++)
+	{
+		read_data = EEPROM.read(addr);
+		if (read_data != write_data) {
+			Serial.print("bad ");
+			Serial.println(addr, DEC);
+		}
+
+	}
+	Serial.println("Finished. You must reboot as EEPROM is now full of junk data");
+
+}
