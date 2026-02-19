@@ -249,6 +249,17 @@ void notifyDccMsg(DCC_MSG * Msg)
 }
 */
 
+
+// This function called whenever an Extended Accessory Packet is received
+void notifyDccSigOutputState(uint16_t addr, uint8_t state) {
+	Serial.print("notifyDccSigOutputState: ");
+	Serial.print(addr, DEC);
+	Serial.print(',');
+	Serial.println(state, DEC);
+
+}
+
+
 // This function is called whenever a normal DCC Turnout Packet is received and we're in Board Addressing Mode
 void notifyDccAccTurnoutBoard(uint16_t BoardAddr, uint8_t OutputPair, uint8_t Direction, uint8_t OutputPower)
 {
