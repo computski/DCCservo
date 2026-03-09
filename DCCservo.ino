@@ -2,7 +2,7 @@
 // 
 /*
     Name:       DCCservo.ino
-    Created:	15/02/2026
+    Created:	09/03/2026
     Author:     Julian Ossowski
 
 	DEPENDENCIES:
@@ -25,6 +25,9 @@
 	Rate of movement is a new feature.  Useful rate values are +10 to -10, where negative values retard the rate of rotation.
 
 	Signal aspects is a new feature.  A pin can drive high or low or be 'power off' as in tri-stated.
+
+	Multiple Aspect Signals (MAS) is a new feature, it supports the DCC advanced accessory command for multiple aspect states.
+	Note: when using this with Panel Pro, ensure you check the offset-address box.
 
 	HARDWARE notes:
 	The unit is powered from the track via a rectifier and 1000uF capacitor.
@@ -114,17 +117,25 @@
 	https://rudysmodelrailway.wordpress.com/2015/01/25/new-arduino-dcc-servo-and-function-decoder-software/
 	https://www.arcomora.com/mardec/
 
-	
+	The nrma library does not support POM CV writes in the sense that the address and cv and value are all presented in a callback.
+	I think it only supports the idea of the board having a single dcc address, and then it might generate cv events against
+	that address if it comes over POM.  My issue is that the project here can support 10 independent DCC addresses.
+	One of the reasons I have not bothered to support CVs in this code.
+
 */
 
 #include <DCC_Decoder.h>
 #include <Servo.h>
 #include <EEPROM.h>
 #include <NmraDcc.h>
+#include <stdlib.h>
+
 
 
 #define TOTAL_PINS 10
 #define BASE_PIN 3
+#define ASPECT_PARAMETER_SIZE	8
+
 
 /*DCC related*/
 NmraDcc  Dcc;
@@ -148,7 +159,7 @@ bool verbose=false;
 /*EEprom and version control*/
 struct CONTROLLER
 {
-	long softwareVersion = 20260215;  //yyyymmdd captured as an integer
+	long softwareVersion = 20260306;  //yyyymmdd captured as an integer
 	bool isDirty = false;  //will be true if eeprom needs a write
 	long long padding;
 };
@@ -183,7 +194,8 @@ enum servoState {
 	SERVO_CLOSED,
 	SERVO_BOOT,
 	ASPECT_THROWN,
-	ASPECT_CLOSED
+	ASPECT_CLOSED,
+	ASPECT_MULTIPLE
 };
 
 struct VIRTUALSERVO {
@@ -199,8 +211,16 @@ struct VIRTUALSERVO {
 	uint8_t position;
 	int8_t rate;  //+ve values speed up movement, -ve slow it down
 	int8_t timeDelay;  //working register, loaded negative and counts up to zero
+	int8_t aspectParameters[ASPECT_PARAMETER_SIZE * 4];
 	Servo* thisDriver;
+	uint8_t MASstate;  //multiple aspect signals commanded state
 };
+
+
+//define functions here
+uint8_t parseBracketedParameters(char* token, int8_t* result);
+bool isAdvanced(VIRTUALSERVO vs);
+
 
 
 //statemachines and params
@@ -250,12 +270,27 @@ void notifyDccMsg(DCC_MSG * Msg)
 */
 
 
-// This function called whenever an Extended Accessory Packet is received
+// MULTI ASPECT SIGNALS this function called whenever an Extended Accessory Packet is received
 void notifyDccSigOutputState(uint16_t addr, uint8_t state) {
-	Serial.print("notifyDccSigOutputState: ");
-	Serial.print(addr, DEC);
-	Serial.print(',');
-	Serial.println(state, DEC);
+	if (verbose) {
+		Serial.print(F("notifyDccSigOutputState: "));
+		Serial.print(addr, DEC);
+		Serial.print(',');
+		Serial.println(state, DEC);
+	}
+	//once we find the VS slot from the addr, we need to confirm it isAdvanced() and only then process the action
+
+	for (auto& vs : virtualservoCollection) {
+		if (addr != vs.address) continue;
+		if (vs.isServo) continue;
+		if (!isAdvanced(vs)) continue;
+		
+		vs.MASstate = state;
+		vs.state = ASPECT_MULTIPLE;
+		
+	}
+
+
 
 }
 
@@ -296,8 +331,8 @@ void notifyDccAccTurnoutOutput(uint16_t Addr, uint8_t Direction, uint8_t OutputP
 	//act on the data, finding all matching virtualservos with the given dcc address
 	for (auto& vs : virtualservoCollection) {
 		if (Addr != vs.address) continue;
-		//execute for EVERY instance of this DCC address,not just the first
-		//for servos, ignore any power-off instruction
+		//execute for EVERY instance of this DCC address,not just the first.
+		//For servos, ignore any power-off instruction
 		vs.power = OutputPower == 0 ? false : true;
 
 		//take action. Direction 0 is closed, 1 thrown
@@ -306,6 +341,8 @@ void notifyDccAccTurnoutOutput(uint16_t Addr, uint8_t Direction, uint8_t OutputP
 			vs.state = Direction == 0 ? SERVO_TO_CLOSED : SERVO_TO_THROWN;
 		}
 		else {
+			//2026-03-07 only respond to the command if the signal is not a multi-aspect device
+			if (isAdvanced(vs)) return;
 			vs.state = Direction == 0 ? ASPECT_CLOSED : ASPECT_THROWN;
 		}
 
@@ -442,6 +479,11 @@ void loop() {
 				break;
 
 
+			case ASPECT_MULTIPLE:
+				//2026-03-07 new code required to handle this, including gating on/off for flashing
+				assertAspectState(vs);
+				break;
+
 			case SERVO_BOOT:
 				if (vsBoot == nullptr) {
 					//handle next-up servo to boot. servos are booted in the CLOSED position
@@ -456,7 +498,7 @@ void loop() {
 					else {
 						//aspect. Immediately go to closed state with power off
 						vs.power = false;
-						vs.state = ASPECT_CLOSED;
+						vs.state = isAdvanced(vs) ? ASPECT_MULTIPLE: ASPECT_CLOSED;
 						vsBoot = nullptr;
 						bootTimer = 0;
 						vs.thisDriver->detach();
@@ -470,7 +512,7 @@ void loop() {
 					//timed out?
 					if (bootTimer == 0) {
 						vs.state = SERVO_CLOSED;
-						Serial.print("pin booted");
+						Serial.print(F("pin booted"));
 						Serial.println(vs.pin, DEC);
 						//release for next vs to boot
 						vsBoot = nullptr;
@@ -513,7 +555,7 @@ void loop() {
 			while (pch != NULL) {
 				switch (i) {
 				case 1:
-					vsParse.pin = atoi(pch);
+					vsParse.pin = strtol(pch, NULL, 10);
 					//valid pin range is BASE_PIN to BASE_PIN + TOTAL_PINS
 					if ((vsParse.pin < BASE_PIN) || (vsParse.pin >= BASE_PIN + TOTAL_PINS)) {
 						i = 10;  //error code
@@ -521,7 +563,7 @@ void loop() {
 					}
 					break;
 				case 2:
-					vsParse.address = atoi(pch);
+					vsParse.address = strtol(pch, NULL, 10);
 					//if out of range 1-2048 then throw an error
 					if ((vsParse.address > 2048) || (vsParse.address == 0)) {
 						i = 10;
@@ -530,12 +572,12 @@ void loop() {
 					break;
 
 				case 3:
-					vsParse.invert = atoi(pch) == 0 ? false : true;
+					vsParse.invert = strtol(pch, NULL, 10) == 0 ? false : true;
 					vsParse.ignorePowerParameter = true;  //default
 					break;
 
 				case 4:
-					vsParse.ignorePowerParameter = atoi(pch) == 0 ? false : true;
+					vsParse.ignorePowerParameter = strtol(pch, NULL, 10) == 0 ? false : true;
 					break;
 				}
 
@@ -548,6 +590,8 @@ void loop() {
 				//match to a pin member of servoslot and copy it over  
 				for (auto& vs : virtualservoCollection) {
 					if (vs.pin == vsParse.pin) {
+						//clear vsParse.aspectParameters to -1, as this array is only used by multi aspect signals
+						memset(vsParse.aspectParameters, -1, 4 * ASPECT_PARAMETER_SIZE * sizeof(int8_t));
 						vsParse.thisDriver = vs.thisDriver;
 						vs = vsParse;  //copy over from vsParse
 						if (vs.thisDriver->attached()) vs.thisDriver->detach();
@@ -560,7 +604,7 @@ void loop() {
 
 			}
 			else {
-				Serial.println("bad command. usage a pin,addr,invert,[ignorePower]");
+				Serial.println(F("bad command. usage a pin,addr,invert,[ignorePower]"));
 			}
 
 		}
@@ -571,75 +615,76 @@ void loop() {
 			vsParse.isServo = true;
 			vsParse.ignorePowerParameter = true;
 			vsParse.continuous = false;  //default setting
+			memset(vsParse.aspectParameters, -1, 4 * ASPECT_PARAMETER_SIZE * sizeof(int8_t));
 
 			//detokenize
-			char* pch;
-			int i = 0;
-			pch = strtok(receivedChars, " ,");
-			while (pch != NULL) {
-				switch (i) {
-				case 1:
-					vsParse.pin = atoi(pch);
-					//valid pin range is BASE_PIN to BASE_PIN + TOTAL_PINS
-					if ((vsParse.pin < BASE_PIN) || (vsParse.pin >= BASE_PIN + TOTAL_PINS)) {
-						i = 10;  //error code
-						Serial.println("bad pin");
-					}
-					break;
-				case 2:
-					vsParse.address = atoi(pch);
-					//if out of range 1-2048 then throw an error
-					if ((vsParse.address > 2048) || (vsParse.address == 0)) {
-						i = 10;
-						Serial.println("bad address");
-					}
-					break;
-				case 3:
-					vsParse.swing = atoi(pch);
-					if (vsParse.swing > 90) {
-						i = 10;
-						Serial.println("bad swing range");
-					}
-					break;
-				case 4:
-					vsParse.invert = atoi(pch) == 0 ? false : true;
-					break;
-				case 5:
-					//this param is optional
-					vsParse.continuous = atoi(pch) == 0 ? false : true;
-					break;
-				}
-				//zero is the s char
+char* pch;
+int i = 0;
+pch = strtok(receivedChars, " ,");
+while (pch != NULL) {
+	switch (i) {
+	case 1:
+		vsParse.pin = strtol(pch, NULL, 10);
+		//valid pin range is BASE_PIN to BASE_PIN + TOTAL_PINS
+		if ((vsParse.pin < BASE_PIN) || (vsParse.pin >= BASE_PIN + TOTAL_PINS)) {
+			i = 10;  //error code
+			Serial.println("bad pin");
+		}
+		break;
+	case 2:
+		vsParse.address = strtol(pch, NULL, 10);
+		//if out of range 1-2048 then throw an error
+		if ((vsParse.address > 2048) || (vsParse.address == 0)) {
+			i = 10;
+			Serial.println("bad address");
+		}
+		break;
+	case 3:
+		vsParse.swing = strtol(pch, NULL, 10);
+		if (vsParse.swing > 90) {
+			i = 10;
+			Serial.println("bad swing range");
+		}
+		break;
+	case 4:
+		vsParse.invert = strtol(pch, NULL, 10) == 0 ? false : true;
+		break;
+	case 5:
+		//this param is optional
+		vsParse.continuous = strtol(pch, NULL, 10) == 0 ? false : true;
+		break;
+	}
+	//zero is the s char
 
-				++i;
-				pch = strtok(NULL, " ,");
+	++i;
+	pch = strtok(NULL, " ,");
 
-			}
+}
 
-			if ((i == 6) || (i == 5)) {
-				//[continuous] is optional, accept 5 || 6
-				Serial.println("OK");
-				//match to a pin member of virtualservoCollection and copy it over
+if ((i == 6) || (i == 5)) {
+	//[continuous] is optional, accept 5 || 6
+	Serial.println("OK");
+	//match to a pin member of virtualservoCollection and copy it over
 
-				for (auto& vs : virtualservoCollection) {
-					if (vs.pin != vsParse.pin) continue;
-					//first copy servo-driver pointer to servoParse
-					vsParse.thisDriver = vs.thisDriver;
-					//then copy servoParse to vs
-					vs = vsParse;
-					vs.position = 90;
-					vs.isServo = true;
-					vs.state = SERVO_TO_CLOSED;
-					//write to EEPROM
-					bootController.isDirty = true;
-					putSettings();
-					break;
-				}
-			}
-			else
-			{
-				Serial.println("bad command. usage s pin,addr,swing,invert,[continuous]");
-			}
+	for (auto& vs : virtualservoCollection) {
+		if (vs.pin != vsParse.pin) continue;
+		//first copy servo-driver pointer to servoParse
+		vsParse.thisDriver = vs.thisDriver;
+		//then copy servoParse to vs
+		vs = vsParse;
+		vs.position = 90;
+		vs.isServo = true;
+		vs.state = SERVO_TO_CLOSED;
+		//write to EEPROM
+		bootController.isDirty = true;
+		putSettings();
+		break;
+	}
+}
+else
+{
+	Serial.println("bad command. usage s pin,addr,swing,invert,[continuous]");
+}
 
 
 		}
@@ -658,7 +703,7 @@ void loop() {
 				switch (i) {
 				case 1:
 					//pin
-					p = atoi(pch);
+					p = strtol(pch, NULL, 10);
 					if ((p < BASE_PIN) || (p >= BASE_PIN + TOTAL_PINS)) {
 						i = 10;
 						Serial.println("bad pin");
@@ -670,7 +715,16 @@ void loop() {
 						if (vs.pin != p) continue;
 						//use a pointer because we subsequently want to modify the collection item, not copy data to it
 						vsPointer = (VIRTUALSERVO*)&vs;
+
+						//2026-03-09 if this is a MAS signal, this command will not work
+						if (isAdvanced(vs)){
+							Serial.println(F("Cannot use command on MAS aspect"));
+							p = -1;
+						}
 					}
+					
+
+
 					break;
 
 				case 2:
@@ -740,7 +794,7 @@ void loop() {
 				switch (i) {
 				case 1:
 					//resolve address
-					address = atoi(pch);
+					address = strtol(pch, NULL, 10);
 					if ((address < 1) || (address > 2048)) {
 						i = 10;
 						Serial.println("bad address");
@@ -798,6 +852,45 @@ void loop() {
 
 		}
 
+		//EMULATE a dcc command for Multi Aspect Signal.  This will affect all MAS at a given dcc address
+		//usage: D addr,state
+		if (receivedChars[0] == 'D') {
+			char* pch;
+			int i = 0;
+			pch = strtok(receivedChars, " ,");
+			int address = -1;
+
+			while (pch != NULL) {
+				switch (i++) {
+				case 1:
+					//resolve address
+					address = strtol(pch, NULL, 10);
+					if ((address < 1) || (address > 2048)) {
+						i = 10;
+						Serial.println("bad address");
+						break;
+					}
+					//address valid, use this to match to individual servos
+					break;
+				case 2:
+					//state command.  Iterate all MAS and execute on all matching addresses
+					uint8_t state = strtol(pch, NULL, 10);
+
+					for (auto& vs : virtualservoCollection) {
+						if (vs.address != address) continue;
+						if (!isAdvanced(vs)) continue;
+						vs.MASstate = state;
+						Serial.println(assertAspectState(vs),DEC);
+					}
+					break;
+				}
+				pch = strtok(NULL, " ,");
+			}
+
+			if (i<10) Serial.println("OK");
+		}
+
+
 		//DEBUG block. y will dump power states
 		if (receivedChars[0] == 'y') {
 			for (auto vs : virtualservoCollection) {
@@ -821,7 +914,7 @@ void loop() {
 			while (pch != NULL) {
 				switch (i) {
 				case 1:
-					p = atoi(pch);
+					p = strtol(pch, NULL, 10);
 					if ((p < BASE_PIN) || (p >= BASE_PIN + TOTAL_PINS)) {
 						i = 10;
 						Serial.println("bad pin");
@@ -838,7 +931,7 @@ void loop() {
 
 				case 2:
 					//resolve rate
-					rate = atoi(pch);
+					rate = strtol(pch, NULL, 10);
 					if (rate > 10) rate = 10;
 					if (rate < -10) rate = -10;
 					//note improperly formed numbers such as -7.7 or 'three' will resolve to zero
@@ -899,16 +992,68 @@ void loop() {
 				}
 				else {
 					//dump signal aspects
-					Serial.print("aspect pin ");
+					if (isAdvanced(vs)) {
+						Serial.print(F("MAS pin "));
+						Serial.print(vs.pin, DEC);
+						Serial.print(F("  address "));
+						Serial.print(vs.address, DEC);
+						Serial.print(F("  invert "));
+						Serial.print(vs.invert, DEC);
+
+						Serial.print(F("  output "));
+						switch (assertAspectState(vs)) {
+						case 0:
+							Serial.print("0 ");
+							break;
+						case 1:
+							Serial.print("1 ");
+							break;
+
+						default:
+							Serial.print("tristate ");
+						
+						}
+											
+						//now the param arrays
+						bool noSpace = true;
+						for (uint8_t a = 0;a < 32;a++) {
+							if (a == 0) {
+								Serial.print(" hi[");
+								noSpace=true;
+							}
+							if (a == ASPECT_PARAMETER_SIZE - 1) {
+								Serial.print("] lo[");
+								noSpace = true;
+							}
+							if (a == (2 * ASPECT_PARAMETER_SIZE) - 1) {
+								Serial.print("] hi-flash[");
+								noSpace = true;
+							}
+							if (a == (3 * ASPECT_PARAMETER_SIZE) - 1) {
+								Serial.print("] lo-flash[");
+								noSpace = true;
+							}
+
+							if (vs.aspectParameters[a] == -1) continue;
+							if (!noSpace) Serial.print(" ");
+							Serial.print(vs.aspectParameters[a], DEC);
+							noSpace = false;
+
+						}
+						Serial.print("]");
+					}
+					else
+					{
+					Serial.print(F("aspect pin "));
 					Serial.print(vs.pin, DEC);
-					Serial.print("  address ");
+					Serial.print(F("  address "));
 					Serial.print(vs.address, DEC);
-					Serial.print("  invert ");
+					Serial.print(F("  invert "));
 					Serial.print(vs.invert, DEC);
-					Serial.print("  power ");
+					Serial.print(F("  power "));
 					if (vs.ignorePowerParameter) { Serial.print("x"); }
 					else { Serial.print(vs.power, DEC); }
-
+					}
 				}
 
 				if (vs.thisDriver == nullptr) {
@@ -918,13 +1063,18 @@ void loop() {
 				{
 					//dump output state
 					switch (vs.state) {
+					case ASPECT_MULTIPLE:
+						Serial.print(F(" state "));
+						Serial.print(vs.MASstate, DEC);
+						break;
+						
 					case ASPECT_THROWN:
 					case SERVO_THROWN:
 					case SERVO_TO_THROWN:
-						Serial.print(" thrown");
+						Serial.print(F(" thrown"));
 						break;
 					default:
-						Serial.print(" closed");
+						Serial.print(F(" closed"));
 						break;
 					}
 
@@ -936,6 +1086,149 @@ void loop() {
 		//EEPROM test.  verifies all locations work. But will destroy all user data and
 		//fill EEPROM with junk.  You must reboot after this test to reinitialise EEPROM.
 		if (receivedChars[0] == 'E') EEpromTest();
+
+
+		//Advanced aspect signalling.  A pin addr invert [hi array] [low array] [hi flash array] [low flash array]
+		if (receivedChars[0] == 'A') {
+			//make use of vsParse to hold params as we verify them
+			vsParse.pin = -1;
+			vsParse.address = -1;
+			char* pch;
+			uint8_t i = 0;   //i is a state engine
+			pch = strtok(receivedChars, " ,");
+			bool resolved = true;
+				uint8_t bufOffset=0;
+
+			while (pch != NULL) {
+				switch (i) {
+				case 0:
+					//ignore A character at start of command
+					i++;
+					bufOffset = 0;
+					break;
+
+				case 1:
+					i++;
+					vsParse.pin = strtol(pch, NULL, 10);
+					if ((vsParse.pin < BASE_PIN) || (vsParse.pin >= BASE_PIN + TOTAL_PINS)) {
+						Serial.println("bad pin");
+						resolved = false;
+					}
+					break;
+
+				case 2:
+					//resolve address
+					i++;
+					vsParse.address = strtol(pch, NULL, 10);
+					if ((vsParse.address < 1) || (vsParse.address > 2048)) {
+						Serial.println("bad address");
+						resolved = false;
+					}
+					//address valid, use this to match to individual servos
+					break;
+
+				case 3:
+					vsParse.invert = strtol(pch, NULL, 10) == 0 ? false : true;
+					i++;
+					break;
+
+				case 4:
+				case 5:
+				case 6:
+				case 7:
+					//expect 4 sets of [bracketed params]
+					{//scope A
+					//we keep looking at tokens until we find a [ start then we import to ] and declare end (2).
+					switch (parseBracketedParameters(pch, vsParse.aspectParameters + bufOffset))
+					{
+					case 2:
+
+						bufOffset += 8;
+						i++;
+						/*
+						Serial.print("bufOffset=");
+						Serial.println(bufOffset, DEC);
+						Serial.println(vsParse.aspectParameters[0], DEC);
+						Serial.println(vsParse.aspectParameters[1], DEC);
+						Serial.println(vsParse.aspectParameters[2], DEC);
+						*/
+						break;
+
+					case 4:
+						//parser error in bracketed params
+						resolved = false;
+						break;
+					default:
+						break;
+					}
+
+					}//end scope A
+					break;
+
+				case 8://optional flash rate param
+					i++;
+					break;
+				}//switch
+
+
+				pch = strtok(NULL, " ,");
+				if (resolved == false) 	break;
+				
+			}//while
+
+			if (i < 8) resolved = false; 
+
+			//next we expect [a b c] where a b c can be nothing through to dd digits
+			if (resolved) {
+				//all params were captured into vsParse
+								
+				for (auto& vs : virtualservoCollection) {
+					if (vs.pin != vsParse.pin) continue;
+				
+				//copy received data to the item
+					vs.address = vsParse.address;
+					vs.isServo = false;
+					vs.power = false;  //default is all output drivers are tri-state, await first dcc command
+					vs.ignorePowerParameter = true;
+					vs.invert = vsParse.invert;
+
+					memcpy(vs.aspectParameters, vsParse.aspectParameters, 4 * ASPECT_PARAMETER_SIZE * sizeof(int8_t));
+					vs.state = ASPECT_MULTIPLE;
+					break;
+				}
+			
+
+				//DEBUG BLOCK
+				/*
+				Serial.println(vsParse.pin, DEC);
+				Serial.println(vsParse.address, DEC);
+
+				for (auto vs : virtualservoCollection) {
+					if (vs.pin != vsParse.pin) continue;
+					//dump the buffer
+					for (uint8_t a = 0;a < 32;a++) {
+						Serial.print(" ");
+						Serial.print(vs.aspectParameters[a], DEC);
+					
+					}
+					Serial.print(" A=");
+					Serial.println(isAdvanced(vs), DEC);
+				}
+				*/
+
+				putSettings();
+				Serial.println("OK");
+			}
+			else {
+				Serial.println(F("Error parsing command. Usage A pin addr invert [hi] [lo] [hi-flash] [low-flash]"));
+			}
+
+			
+
+
+
+		}
+
 
 
 	}
@@ -1000,6 +1293,7 @@ void getSettings(void) {
 			vs.ignorePowerParameter = true;
 			vs.isServo = true;
 			vs.rate = 0;
+			memset(vs.aspectParameters, -1, 4 * ASPECT_PARAMETER_SIZE * sizeof(int8_t));
 			++p;
 		}
 		/*write back default values*/
@@ -1012,6 +1306,9 @@ void getSettings(void) {
 	//eeAddr += sizeof(bootController);
 	eeAddr = 32; //bug fix
 	EEPROM.get(eeAddr, virtualservoCollection);
+	eeAddr += sizeof(virtualservoCollection);
+	Serial.print(F("EEPROM="));
+	Serial.println(eeAddr, DEC);
 
 	//initialise the pin assignments 4 onwards move all servos and aspects to closed position
 	int p = BASE_PIN;
@@ -1020,6 +1317,7 @@ void getSettings(void) {
 	for (auto& vs : virtualservoCollection) {
 		vs.pin = p;
 		vs.state = SERVO_BOOT;
+		vs.MASstate = 127;
 		//s.position = 90;  //neutral
 		/*minimum useful swing is 5 degrees*/
 		if ((vs.swing < 5) || (vs.swing > 90)) vs.swing = 5;
@@ -1048,11 +1346,10 @@ void getSettings(void) {
 		++p;
 		++i;
 	}
-	Serial.print("\nsofware version ");
+	Serial.print(F("\nsofware version "));
 	Serial.println(bootController.softwareVersion, DEC);
-	if (factory) Serial.println("factory");
-	Serial.println("\n.............\n");
-
+	if (factory) Serial.println(F("factory reset"));
+	
 }
 
 
@@ -1112,6 +1409,279 @@ void EEpromTest(void) {
 		}
 
 	}
-	Serial.println("Finished. You must reboot as EEPROM is now full of junk data");
+	Serial.println(F("Finished. You must reboot as EEPROM is now full of junk data"));
 
 }
+
+/// <summary>
+/// call from a strtok loop, repeatedly passing in tokens. It will parse looking for [aa bb cc]
+/// max of 8 parameters, min no params.  params must be enclosed in square brackets.
+/// </summary>
+/// <param name="token">null terminated char string</param>
+/// <param name="result">array to receive the numeric parameters recovered</param>
+/// <returns>2 when the entire set of max 8 tokens is parsed.  non-values are represented as -1 </returns>
+uint8_t parseBracketedParameters(char* token, int8_t* result) {
+	static int8_t arr[ASPECT_PARAMETER_SIZE];
+	static uint8_t c = 0;
+	static uint8_t parserState = 0;
+	char* endptr;
+	/*0 not in block
+	1 in block
+	2 block ended, valid result
+	4 format error
+	if you call again for state other than 1, it will revert to case 0
+	*/
+
+	//self reset
+	if (parserState != 1) parserState = 0;
+	bool foundStart = token[0] == '[' ? true : false;
+	bool foundEnd = token[strlen(token) - 1] == ']' ? true : false;
+	
+
+	switch (parserState) {
+	case 0:  //not in a [] block
+		if (!foundStart) break;
+		parserState = 1;
+		//fill arr[] with -1
+		for (c = 0;c < 8;c++) {
+			arr[c] = -1;
+		}
+		c = 0;
+
+		//[] is a special case
+		if ((strlen(token) == 2) && foundEnd) {
+			parserState = 2;
+			break;
+		}
+
+		arr[c++] = strtol(++token, &endptr, 10);
+
+		//if the conversion worked and used entire string, *endptr==NULL
+	//more useful if endptr==p then nothing was converted
+		if (endptr == token) {
+			parserState = 4;  //declare fail
+			break;
+		}
+
+		if ((*endptr != '\0') && (*endptr != ']')) {
+			parserState = 4;  //declare fail
+			break;
+		}
+
+		//its possible this is [x]
+		if (foundEnd) {
+			parserState = 2;
+		}
+		//note that ]] results in no start found and [[ results in 1
+		break;
+
+
+
+	case 1:  //in a [] block
+		if (foundStart) {
+			//re start is an error
+			parserState = 4;
+			break;
+		}
+
+		arr[c++] = strtol(token, &endptr, 10);
+		if (endptr == token) {
+			parserState = 4;  //FAIL
+			break;
+		}
+
+		if ((*endptr != '\0') && (*endptr != ']')) {
+			parserState = 4;  //FAIL
+			break;
+		}
+
+
+		if (c > ASPECT_PARAMETER_SIZE) {
+			//too many params
+			parserState = 4;
+			break;
+		}
+
+		if (foundEnd) {
+			parserState = 2;
+		}
+		break;
+
+	}
+
+	if (parserState == 2) {
+		//copy static array to result.  If state=fail, result is left untouched
+		//WARNING: Array Decay: When an array is passed as an argument to a function, it decays into a pointer to its first element.
+		//this means sizeof tests can yeild unpredctable behaviour.  The safer approach is to use ASPECT_PARAMETER_SIZE
+
+		for (int a = 0;a < ASPECT_PARAMETER_SIZE; a++) {
+			result[a] = arr[a];
+		}
+	}
+	return parserState;
+
+};
+
+
+
+bool isAdvanced(VIRTUALSERVO vs) {
+//may be able to make this a member function of VIRTUALSERVO - it will increase struct size by a pointer var
+	for (int a = 0;a < ASPECT_PARAMETER_SIZE * 4; a++) {
+		if (vs.aspectParameters[a] != -1) return true;
+	}
+	return false;
+}
+
+
+/// <summary>
+/// Default state, including boot (which sets MASstate=127) will be Tristate.  If MASstate appears in one of 
+/// the parameter arrays, it will drive the pin active hi|low or flash variants thereof.
+/// If MASstate is not a recognised code (on this pin) then the pin goes tristate.
+/// </summary>
+/// <param name="vs">target virtual servo</param>
+/// <returns>the output state: 0 active low, 1 active hi, 2 tristate</returns>
+uint8_t assertAspectState(VIRTUALSERVO vs) {
+	/*All MAS pins will boot as power=off, i.e. tristate
+	* The first MAS resolved code will set power=on and assert a hi|lo or flash variant thereof
+	* Non resolved codes.  Will result in a tristate output.  If you don't want this, you need to 
+	* map all MAScodes to the pin to describe a hi|lo behaviour.
+	*/
+
+	/*
+	bool hasCommonCode = false;
+	//first scan for at least one common code between [hi] and [lo]
+	for (int a = 0;a< ASPECT_PARAMETER_SIZE - 1;a++) {  
+		if (vs.aspectParameters[a] == -1) continue;
+		if (hasCommonCode) continue;
+		for (int c = ASPECT_PARAMETER_SIZE;c < (ASPECT_PARAMETER_SIZE * 2) - 1;c++) {
+			if (vs.aspectParameters[c] == -1) continue;
+			if (vs.aspectParameters[a] == vs.aspectParameters[c]) {
+				hasCommonCode = true;
+				break;
+			}
+		} 
+	}
+
+	//then scan for at least one common code between [hi-f] and [low-f]
+	for (int a = 0;a < (ASPECT_PARAMETER_SIZE *3)- 1;a++) {  
+		if (vs.aspectParameters[a] == -1) continue;
+		if (hasCommonCode) continue;
+		for (int c = ASPECT_PARAMETER_SIZE*3;c < (ASPECT_PARAMETER_SIZE *4) - 1;c++) {
+			if (vs.aspectParameters[c] == -1) continue;
+			if (vs.aspectParameters[a] == vs.aspectParameters[c]) {
+				hasCommonCode = true;
+				break;
+			}
+		}
+	}
+	*/
+
+	
+//order of precedence is flash low, flash high, assert low, asssert hi
+/*use cases pin 2 addr 7 [hi 5] [low 5] [] []   will drive pin 2 hi/low but because both [hi] and [lo] contain same aspect code, its clear
+* there is no tristate option for this pin, i.e. its always active
+* pin 2 addr 7 [hi 3] [lo 4] means that there is a tristate case where some other code might be used on a separate in and in which case this
+* pin will go tristate.
+*/
+
+
+	enum output {
+		LO,
+		HI,
+		TRISTATE,
+	};
+
+	//note, arduino.h defines constants of LOW=0, HIGH=1 but no tristate
+	
+
+	uint8_t outputState = TRISTATE;
+		
+
+	for (int a = (ASPECT_PARAMETER_SIZE * 4) - 1;a > -1;a--) {
+		switch (int(a / 8)) {
+		case 3:
+			//flash low
+			if (vs.aspectParameters[a] == vs.MASstate) {
+				//assert low gated with flash flag
+				if (ledState) outputState = LO;
+			}
+			break;
+
+
+		case 2:
+			//flash high
+			if (vs.aspectParameters[a] == vs.MASstate) {
+				//assert low gated with flash flag
+				if (ledState) outputState = HI;
+			}
+			break;
+
+		case 1:
+			//solid low
+			if (vs.aspectParameters[a] == vs.MASstate) {
+				outputState = LO;
+			}
+			break;
+
+		case 0: //solid hi
+			if (vs.aspectParameters[a] == vs.MASstate) {
+				outputState = HI;
+			}
+			break;
+		}
+
+	}
+
+
+	//assert the output, also process invert
+	switch (outputState) {
+	case TRISTATE:
+		pinMode(vs.pin, INPUT);
+		break;
+
+	case LO:
+		outputState = vs.invert ? HI : LO;
+		pinMode(vs.pin, OUTPUT);
+		digitalWrite(vs.pin, outputState==LO ? LOW : HIGH);
+		break;
+
+	case HI:
+		outputState = vs.invert ?LO : HI;
+		pinMode(vs.pin, OUTPUT);
+		digitalWrite(vs.pin, outputState == LO ? LOW : HIGH);
+		break;
+
+	}
+
+		return outputState;
+
+}
+
+
+
+
+
+
+
+
+
+/* aspect logic
+* for 'a' we respond to addr and drive the pin hi/low there is no tri state
+* for 'A'
+* if [hi=7] and [lo=7] then we will actively drive pin based on Thrown =hi (unless invert)
+* so it will be active hi|low, no tri state
+* if [hi=7] and [lo=-1] then pin is active hi and tristate otherwise
+
+So i can meld both a and A into the same struct, however if user is using a they don't want complexity of A
+and also system needs to know whether to respond to turnout command or advanced-aspect
+
+also for 'a' we don't use an aspect code.  so easiest way to know if something is A or a is to check if all elements of aspectPArams are -1
+if they are, we are using 'a'
+
+
+
+
+
+
+
+*/
