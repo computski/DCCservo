@@ -236,7 +236,8 @@ uint8_t parseBracketedParameters(char* token, uint8_t* result);
 bool isMASdevice(VIRTUALSERVO vs);
 void getSettings(void);
 void putSettings(void);
-
+bool validatePin(int p);
+bool validateAddress(int address);
 
 
 //virtual servo objects
@@ -548,14 +549,13 @@ void loop() {
 	//look for more incoming serial data
 	recvWithEndMarker();
 
-	//process serial command
+	//PROCESS SERIAL COMMANDS
 	if (newSerialData) {
 		//need a temporary virtualservo object
 		VIRTUALSERVO vsParse;
 		//also need a pointer to a servo in virtualservoCollection
 		VIRTUALSERVO* vsPointer = nullptr;
 
-		//Serial.println(receivedChars);
 		newSerialData = false;
 
 		//ASPECT set-up command. Usage: a pin,addr,invert,[ignorePower]
@@ -563,6 +563,7 @@ void loop() {
 		if (receivedChars[0] == 'a') {
 			vsParse.isServo = false;
 			vsParse.state = ASPECT_CLOSED;
+			bool resolved = true;
 
 			//detokenize
 			char* pch;
@@ -570,22 +571,14 @@ void loop() {
 			pch = strtok(receivedChars, " ,");
 
 			while (pch != NULL) {
-				switch (i) {
+				switch (i++) {
 				case 1:
-					vsParse.pin = strtol(pch, NULL, 10);
-					//valid pin range is BASE_PIN to BASE_PIN + TOTAL_PINS
-					if ((vsParse.pin < BASE_PIN) || (vsParse.pin >= BASE_PIN + TOTAL_PINS)) {
-						i = 10;  //error code
-						Serial.println("bad pin");
-					}
+					resolved = validatePin(vsParse.pin);
 					break;
 				case 2:
 					vsParse.address = strtol(pch, NULL, 10);
 					//if out of range 1-2048 then throw an error
-					if ((vsParse.address > 2048) || (vsParse.address == 0)) {
-						i = 10;
-						Serial.println("bad address");
-					}
+					resolved = validateAddress(vsParse.address);
 					break;
 
 				case 3:
@@ -598,11 +591,11 @@ void loop() {
 					break;
 				}
 
-				++i;
 				pch = strtok(NULL, " ,");
-
+				if (!resolved) break;
 			}
-			if ((i == 4)||(i==5)) {
+			
+			if (((i == 4)||(i==5)) && resolved) {
 				Serial.println("OK");
 				//match to a pin member of servoslot and copy it over  
 				for (auto& vs : virtualservoCollection) {
@@ -635,74 +628,65 @@ void loop() {
 			memset(vsParse.aspectParameters, MAS_EMPTY_VAL, 4 * ASPECT_PARAMETER_SIZE * sizeof(int8_t));
 
 			//detokenize
-char* pch;
-int i = 0;
-pch = strtok(receivedChars, " ,");
-while (pch != NULL) {
-	switch (i) {
-	case 1:
-		vsParse.pin = strtol(pch, NULL, 10);
-		//valid pin range is BASE_PIN to BASE_PIN + TOTAL_PINS
-		if ((vsParse.pin < BASE_PIN) || (vsParse.pin >= BASE_PIN + TOTAL_PINS)) {
-			i = 10;  //error code
-			Serial.println("bad pin");
-		}
-		break;
-	case 2:
-		vsParse.address = strtol(pch, NULL, 10);
-		//if out of range 1-2048 then throw an error
-		if ((vsParse.address > 2048) || (vsParse.address == 0)) {
-			i = 10;
-			Serial.println("bad address");
-		}
-		break;
-	case 3:
-		vsParse.swing = strtol(pch, NULL, 10);
-		if (vsParse.swing > 90) {
-			i = 10;
-			Serial.println("bad swing range");
-		}
-		break;
-	case 4:
-		vsParse.invert = strtol(pch, NULL, 10) == 0 ? false : true;
-		break;
-	case 5:
-		//this param is optional
-		vsParse.continuous = strtol(pch, NULL, 10) == 0 ? false : true;
-		break;
-	}
-	//zero is the s char
+			bool resolved = true;
+			char* pch;
+			int i = 0;
+			pch = strtok(receivedChars, " ,");
+			while (pch != NULL) {
+				switch (i++) {
+				case 1:
+					vsParse.pin = strtol(pch, NULL, 10);
+					resolved = validatePin(vsParse.pin);
+					break;
+				case 2:
+					vsParse.address = strtol(pch, NULL, 10);
+					resolved = validateAddress(vsParse.address);
+					break;
+				case 3:
+					vsParse.swing = strtol(pch, NULL, 10);
+					if (vsParse.swing > 90) {
+						resolved = false;
+						Serial.println("bad swing range");
+					}
+					break;
+				case 4:
+					vsParse.invert = strtol(pch, NULL, 10) == 0 ? false : true;
+					break;
+				case 5:
+					//this param is optional
+					vsParse.continuous = strtol(pch, NULL, 10) == 0 ? false : true;
+					break;
+				}
+				//zero is the s char
 
-	++i;
-	pch = strtok(NULL, " ,");
+				pch = strtok(NULL, " ,");
+				if (!resolved) break;
+			}
 
-}
+			if (resolved && ((i == 6) || (i == 5))) {
+				//[continuous] is optional, accept 5 || 6
+				Serial.println("OK");
+				//match to a pin member of virtualservoCollection and copy it over
 
-if ((i == 6) || (i == 5)) {
-	//[continuous] is optional, accept 5 || 6
-	Serial.println("OK");
-	//match to a pin member of virtualservoCollection and copy it over
-
-	for (auto& vs : virtualservoCollection) {
-		if (vs.pin != vsParse.pin) continue;
-		//first copy servo-driver pointer to servoParse
-		vsParse.thisDriver = vs.thisDriver;
-		//then copy servoParse to vs
-		vs = vsParse;
-		vs.position = 90;
-		vs.isServo = true;
-		vs.state = SERVO_TO_CLOSED;
-		//write to EEPROM
-		bootController.isDirty = true;
-		putSettings();
-		break;
-	}
-}
-else
-{
-	Serial.println("bad command. usage s pin,addr,swing,invert,[continuous]");
-}
-
+				for (auto& vs : virtualservoCollection) {
+					if (vs.pin != vsParse.pin) continue;
+					//first copy servo-driver pointer to servoParse
+					vsParse.thisDriver = vs.thisDriver;
+					//then copy servoParse to vs
+					vs = vsParse;
+					vs.position = 90;
+					vs.isServo = true;
+					vs.state = SERVO_TO_CLOSED;
+					//write to EEPROM
+					bootController.isDirty = true;
+					putSettings();
+					break;
+				}
+			}
+			else
+			{
+				Serial.println("bad command. usage s pin,addr,swing,invert,[continuous]");
+			}
 
 		}
 
@@ -715,18 +699,16 @@ else
 			int i = 0;
 			pch = strtok(receivedChars, " ,");
 			int p = -1;
+			bool resolved=true;
 
 			while (pch != NULL) {
-				switch (i) {
+				switch (i++) {
 				case 1:
 					//pin
 					p = strtol(pch, NULL, 10);
-					if ((p < BASE_PIN) || (p >= BASE_PIN + TOTAL_PINS)) {
-						i = 10;
-						Serial.println("bad pin");
-						p = -1;
-						break;
-					}
+					resolved = validatePin(p);
+					if (!resolved) break;
+
 					//p is valid, use this to lookup the servoslot
 					for (auto& vs : virtualservoCollection) {
 						if (vs.pin != p) continue;
@@ -736,13 +718,13 @@ else
 						//2026-03-09 if this is a MAS signal, this command will not work
 						if (isMASdevice(vs)){
 							Serial.println(F("Cannot use command on MAS aspect"));
-							p = -1;
+							resolved = false;
 						}
 					}
 					break;
 
 				case 2:
-					if (vsPointer == nullptr) { i = 10;break; }
+					if (vsPointer == nullptr) { resolved = false;break; }
 
 					if (vsPointer->isServo) {
 						switch (pch[0]) {
@@ -779,11 +761,11 @@ else
 					vsPointer->power = pch[0] == '1' ? true : false;
 				}
 
-				++i;
 				pch = strtok(NULL, " ,");
+				if (!resolved) break;
 			}
 
-			if ((i == 3) || (i == 4)) {
+			if (resolved && ((i == 3) || (i == 4))) {
 				Serial.println("OK");
 			}
 			else
@@ -803,19 +785,14 @@ else
 			pch = strtok(receivedChars, " ,");
 			int p = -1;
 			int address = -1;
+			bool resolved = true;
 
 			while (pch != NULL) {
-				switch (i) {
+				switch (i++) {
 				case 1:
 					//resolve address
 					address = strtol(pch, NULL, 10);
-					if ((address < 1) || (address > 2048)) {
-						i = 10;
-						Serial.println("bad address");
-						p = -1;
-						break;
-					}
-					//address valid, use this to match to individual servos
+					resolved = validateAddress(address);
 					break;
 
 				case 2:
@@ -847,16 +824,16 @@ else
 					//power.  Iterate all servos and execute on all matching addresses
 					for (auto& vs : virtualservoCollection) {
 						if (vs.address != address) continue;
+						if (!isMASdevice(vs)) continue;
 						vs.power = pch[0] == '1' ? true : false;
 					}
 					break;
 				}
-				++i;
 				pch = strtok(NULL, " ,");
-
+				if (!resolved) break;
 			}
 
-			if ((i == 3) || (i == 4)) {
+			if (resolved && ((i == 3) || (i == 4))) {
 				Serial.println("OK");
 			}
 			else
@@ -873,18 +850,14 @@ else
 			int i = 0;
 			pch = strtok(receivedChars, " ,");
 			int address = -1;
+			bool resolved = true;
 
 			while (pch != NULL) {
 				switch (i++) {
 				case 1:
 					//resolve address
 					address = strtol(pch, NULL, 10);
-					if ((address < 1) || (address > 2048)) {
-						i = 10;
-						Serial.println("bad address");
-						break;
-					}
-					//address valid, use this to match to individual servos
+					resolved = validateAddress(address);
 					break;
 				case 2:
 					//state command.  Iterate all MAS and execute on all matching addresses
@@ -895,14 +868,15 @@ else
 						if (!isMASdevice(vs)) continue;
 						vs.MASstate = state;
 						MAScommandSync = false;
-						Serial.println(assertMASoutput(vs),DEC);
+						if (verbose) Serial.println(assertMASoutput(vs),DEC);
 					}
 					break;
 				}
 				pch = strtok(NULL, " ,");
+				if (!resolved) break;
 			}
 
-			if (i<10) Serial.println("OK");
+			if (resolved && (i>=3)) Serial.println("OK");
 		}
 
 
@@ -925,17 +899,15 @@ else
 			pch = strtok(receivedChars, " ,");
 			int p = -1;
 			int rate = 0;
+			bool resolved = true;
 
 			while (pch != NULL) {
-				switch (i) {
+				switch (i++) {
 				case 1:
 					p = strtol(pch, NULL, 10);
-					if ((p < BASE_PIN) || (p >= BASE_PIN + TOTAL_PINS)) {
-						i = 10;
-						Serial.println("bad pin");
-						p = -1;
-						break;
-					}
+					resolved = validatePin(p);
+					if (!resolved) break;
+
 					//p is valid, use this to lookup the servoslot
 					for (auto& vs : virtualservoCollection) {
 						if (vs.pin != p) continue;
@@ -953,11 +925,11 @@ else
 					break;
 				}
 
-				++i;
 				pch = strtok(NULL, " ,");
+				if (!resolved) break;
 			}
 
-			if (i == 3) {
+			if (resolved && (i == 3)) {
 				Serial.println("OK");
 				vsPointer->rate = rate;
 				bootController.isDirty = true;
@@ -1109,10 +1081,10 @@ else
 			vsParse.pin = -1;
 			vsParse.address = -1;
 			char* pch;
-			uint8_t i = 0;   //i is a state engine
+			uint8_t i = 0;   //i is a state engine, its not auto incremented in the switch statement because there's a sub-state engine in case 4,5,6,7
 			pch = strtok(receivedChars, " ,");
 			bool resolved = true;
-				uint8_t bufOffset=0;
+			uint8_t bufOffset=0;
 
 			while (pch != NULL) {
 				switch (i) {
@@ -1125,21 +1097,14 @@ else
 				case 1:
 					i++;
 					vsParse.pin = strtol(pch, NULL, 10);
-					if ((vsParse.pin < BASE_PIN) || (vsParse.pin >= BASE_PIN + TOTAL_PINS)) {
-						Serial.println("bad pin");
-						resolved = false;
-					}
+					resolved = validatePin(vsParse.pin);
 					break;
 
 				case 2:
 					//resolve address
 					i++;
 					vsParse.address = strtol(pch, NULL, 10);
-					if ((vsParse.address < 1) || (vsParse.address > 2048)) {
-						Serial.println("bad address");
-						resolved = false;
-					}
-					//address valid, use this to match to individual servos
+					resolved = resolved && validateAddress(vsParse.address);
 					break;
 
 				case 3:
@@ -1180,13 +1145,13 @@ else
 
 
 				pch = strtok(NULL, " ,");
-				if (resolved == false) 	break;
+				if (!resolved) 	break;
 				
 			}//while
 
 			if (i < 8) resolved = false; 
 
-			//next we expect [a b c] where a b c can be nothing through to dd digits
+			//next we expect [a b c] where a b c can be [] through to 8 sets of digits
 			if (resolved) {
 				//all params were captured into vsParse
 								
@@ -1211,9 +1176,6 @@ else
 			else {
 				Serial.println(F("Error parsing command. Usage A pin addr invert [hi] [lo] [hi-flash] [low-flash]"));
 			}
-
-			
-
 
 
 		}
@@ -1614,8 +1576,36 @@ uint8_t assertMASoutput(VIRTUALSERVO vs) {
 	}
 
 	return outputState;
-
 }
+
+
+	/// <summary>
+	/// validates a given pin is valid on this device
+	/// </summary>
+	/// <param name="p">pin number</param>
+	/// <returns>true if valid</returns>
+	bool validatePin(int p) {	
+		if ((p < BASE_PIN) || (p >= BASE_PIN + TOTAL_PINS)) {
+			Serial.println("bad pin");
+			return false;
+		}
+		return true;
+	}
+
+	/// <summary>
+	/// validates if a DCC accessory address is in the range 1 to 2048
+	/// </summary>
+	/// <param name="address">DCC address</param>
+	/// <returns>true if valid</returns>
+	bool validateAddress(int address) {
+		//valid DCC addresses are in the range 1 to 2048
+		if ((address < 1) || (address > 2048)) {
+			Serial.println("bad address");
+			return false;
+		}
+		return true;
+	}
+
 
 
 
