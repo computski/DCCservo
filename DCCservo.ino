@@ -2,7 +2,7 @@
 // 
 /*
     Name:       DCCservo.ino
-    Created:	09/03/2026
+    Created:	22/03/2026
     Author:     Julian Ossowski
 
 	DEPENDENCIES:
@@ -12,12 +12,14 @@
 
 
 	DESCRIPTION:	 
-	Nano based servo driver for DCC model railroad.  Assigns pins 3-12 as servos (i.e. 10 servos). You program them via serial for DCC address,
-	for swing range and invert.  You can command the pin directly from serial to closed|thrown|neutral|Toggle. Neutral will set
+	Arduino-Nano based servo driver for DCC model railroad.  Assigns pins 3-12 as servos (i.e. 10 servos) or led signals. 
+	You program them via serial to assign DCC addresses to specific pins and other parameters such as swing range, and invert. 
+	
+	For test/ mechanical set-up you can command the pin directly from serial to closed|thrown|neutral|Toggle. Neutral will set
 	the servo to 90 degress (its midpoint) which is useful in setting up the mechanics.  Max range is a full 180 degrees.
 
 	Each servo will respond to its DCC address, which is held as the explicit address 1-2048 
-	one or more servos can be assigned the same DCC address.  useful for crossovers along with invert feature.
+	One or more servos can be assigned the same DCC address.  useful for crossovers along with invert feature.
 
 	Remember that two or more servos can share the same control signal.  If you do this, you need to be mindful of the mechanical set up
 	because they will all move in the same direction.
@@ -29,34 +31,36 @@
 	Multiple Aspect Signals (MAS) is a new feature, it supports the DCC advanced accessory command for multiple aspect states.
 	Note: when using this with Panel Pro, ensure you check the offset-address box.
 
+	Verbose command will dump incoming DCC commands over serial and show the unit's response to these.  Useful for system debug.
+
 	HARDWARE notes:
 	The unit is powered from the track via a rectifier and 1000uF capacitor.
-	pin 2 is the DCC signal.  Enable pullup, as I am using a rectifier to produce 12v power and a pulldown diode 
-	in series with a 5k1k resistor as the DCC signal take-off.
+	pin 2 is the DCC signal.  Input-enable-pullup, as I use a rectifier to produce 12v power and a pulldown diode 
+	in series with a 51k resistor as the DCC signal take-off into pin 2.
 	pins 3 to 12 are servo drivers (ten in all)
 	pin 13 is the built-in LED, you could disable this and use as a servo output.  I use it as a heartbeat indicator
 	the servo code can handle 12 servos on most boards (incl nano)
 	neutral position is 90 degrees.
-	Closed is defined as minimum position, Thrown as maximum (unless invert = true)
+	Closed is defined as minimum position, Thrown as maximum (invert = true reverses this)
 	The unit only actively drives the servo whilst executing a movement command, once the movement is complete, it disables
 	the servo.  This stops servo chatter, but does assume the servo can hold its position unpowered.  You can optionally enable
 	continuous powering of the servo.
 	   
-	On eBay there are low cost <Nano expansion board> for sale.  These have 12V DC power jack and lots of header pins which
-	are ideal for servos as they support signal, 5v and ground, which is common servo pinout.  Its straightforward to plug the nano into
-	one of these and then just jack in the servos.  The 12v rectifier goes to the power socket and the dcc signal to pin 2
+	On eBay/ Aliexpress there are low cost <Nano expansion board> available.  These have 12V DC power jack and lots of header pins which
+	are ideal for servos as they support signal, 5v and ground, which is the common JST servo pinout.  It's straightforward to plug the Nano
+	into the expansion board and then just jack in the servos.  The 12v rectifier goes to the power socket and the dcc signal to pin 2
 
-	There is no need to use an opto isolator if you intend to power this unit from the track. There is one minor niggle
-	with powering it off the track; if you run a loco into a turnout which is set against it, a short circuit results. The
-	command station will cut track power and now you are unable to 'correct' the turnout position.  If the turnout board is driven
-	from a separate DC supply (and opto isolator used) then you could set the turnout correctly and re-establish track power.
+	There is no need to use an opto isolator if you intend to power this unit from the track. One minor niggle with powering it off 
+	the track; if you run a loco into a turnout which is set against it, a short circuit results. The command station will cut track
+	power and now you are unable to 'correct' the turnout position.  If the turnout board is driven	from a separate DC supply and 
+	an opto isolator used then you could set the turnout correctly and re-establish track power.
 	BUT first this assumes you have a DCC command station with a control bus separate from the power bus, an second it overlooks
-	the situation where many locos have keep alives fitted, so even when track power is cut, the loco carries on and rides over
-	the point set against it and usually derails.   Ain't no fixing that except with your hand!  Keep it simple and just
-	power this unit from the track.
+	the case where the loco has a keep-alive fitted; even when track power is cut, the loco carries on and rides over
+	the point set against it and usually derails.   Ain't no fixing that except with your hand!  
+	>>> Keep it simple and power this unit from the track <<<
 
 
-	Serial COMMANDS.  All commands must be followed with newline:
+	Serial COMMANDS.  All commands are case sensitive and must be followed with newline:
 
 	SETUP command for servos is
 	s pin,addr,swing,invert,[continuous]
@@ -70,25 +74,37 @@
 	optional ignorePower defaults to 1=yes.  This prevents the unit from responding to the 'off' message that JRMI panel pro sends, which would 
 	depower the pin output (makes it tri-state).
 
+	SETUP command for Multi Aspect Signals (MAS)
+	A pin addr invert [hi] [lo] [hi-flash] [lo-flash]
+	[hi] are the aspect command(s) which drive the pin high, [lo] will drive the pin low and the flash variants will drive the pin hi/low flash
+	any command received that is not in one of the [hi|low|flash] command sets will drive the output tri-state.  This allows two LEDs to be driven from the
+	same pin.  all the brackets must be present;
+	e.g. A 4 22 [7 9] [5] [] [] will drive pin 4 when a command to DCC addr 22 is received. command 7 or 9 will drive the pin high, command 5 will drive it low
+	all other commands will drive it tristate.  the pin does not drive any flashing aspects because none were programmed
+	e.g. A 4 22 [] [] [6] [8 3] will drive pin 4 flash-hi on command 6, and flash low on command 8 or 3.  all other commands drive the pin tristate
+
+
 	EXECUTE command is
 	p pin, c|t|n|T, [power]
 	pin is 4-12, c|t|n|T correspond to closed, thrown, neutral, Toggle
 	[power] is optional and can be 1|0. It only affects signal aspects, not servo turnouts.
-
 	Once a pin is mapped to a DCC address, it will respond to that DCC turnout or aspect.
 
-	DUMP command is x, this will dump current settings to serial.
+	DUMP command is x, this will dump current settings to serial, as well as the pin output state
 	x
-	pin 3  address 0  swing 25  invert 0  continuous 0 rate 0 thrown
-	pin 4  address 0  swing 25  invert 0  continuous 0 rate 2 closed
-	pin 5  address 0  aspect invert 0 power 1 closed
-
-
+	aspect pin 3  address 88 invert 0  power x closed
+	servo pin 4  address 2  swing 25  invert 0  continuous 0 rate 2 closed
+	MAS pin 5  address 0  aspect invert 0 power 1 closed
+	  
 	DCC EMULATION command, a DCC controller itself can only send t|c (and power), whereas T|n are for our convenience when setting up
 	d addr, t|c|T|n, [power]
 	[power] is optional. 1|0 will set the power parameter to on or off for the given pin.  Only affects signal aspect pins.
 
-	RATE command.
+	DCC EMULATION 2 for multi-aspect signals
+	D addr c
+	Will send the aspect command value c (0-254) to the multi-aspect signal at address addr
+		
+	RATE command
 	r pin rate
 	Will increase/retard the rate of rotation of a servo.  useful values are +10 faster through to -10 slower.  The currently 
 	programmed value is displayed via the x command.
@@ -98,30 +114,33 @@
 	Will dump incoming DCC commands to serial. Useful to confirm hardware is receiving DCC and able to match to an address set up
 	in the unit.  verbose=OFF on boot.  Dumping DCC to serial might cause delay in execution of commands.
 
-	Further notes:
+	FURTHER NOTES:
 	Signal aspects:  A pin output can be logic 1|0 based on the throw position.  The pin can also be tristated if power is zero.
 	i.e. you could have 1= red, 0= white and if power=0 both aspects are off.
 
-	Routes are not supported.  Use JRMI Panel Pro or an advanced DCC controller.
+	Routes are not supported.  Use JRMI Panel Pro or an advanced DCC controller to set up and control routes
 	
-	This unit does not support CV based set up over DCC.  There is no point.  It is easy to set-up the unit over
-	serial, and once done you would rarely change it.  DCC is used only to command the turnouts to throw or aspects to change.
+	This unit does not support CV based set up over DCC.  There is no point.  It is easy to setup the unit over serial
+	and once done you would rarely change it.  DCC is used only to command the turnouts to throw or aspects to change.
 	
-	Why not use arcomora software?  It won't fit into a nano with a standard bootloader.
+	Why not use Arcomora software?  It won't fit into a Nano with a standard bootloader.
 	I also consider it too complex to set up.  Also its not clear if it can support the simple 
-	solution used here where the nano is plugged direct into a low cost expansion board.
-
+	solution used here where the Nano is plugged direct into a low cost expansion board.
 
 	https://www.arduino.cc/reference/en/libraries/servo/
 	https://github.com/nzin/arduinodcc/tree/master/arduinoSource/dccduino
 	https://rudysmodelrailway.wordpress.com/2015/01/25/new-arduino-dcc-servo-and-function-decoder-software/
 	https://www.arcomora.com/mardec/
 
-	The nrma library does not support POM CV writes in the sense that the address and cv and value are all presented in a callback.
-	I think it only supports the idea of the board having a single dcc address, and then it might generate cv events against
-	that address if it comes over POM.  My issue is that the project here can support 10 independent DCC addresses.
-	One of the reasons I have not bothered to support CVs in this code.
+	The NRMA library does not support POM CV writes in the sense that the address and cv and value are both presented in a callback.
+	I think it only supports the board having a single dcc address, and then it might generate cv events against
+	that address if it comes over POM.  My project here can support 10 independent DCC addresses and is one of the reasons I did
+	not implemented accessory CVs in this code.
 
+	MAS signals and normal aspect signals can both be driven from JMRI panel pro, along with route control.  Panel Pro, when it sends a throw/close command
+	to a signal (normal aspect signal) will send the command first with power on and then with power off.  This is hardcoded and unfortunately means that Panel Pro
+	cannot support tristate for normal aspect signals.   MAS signals have multiple state codes (up to 254) and do allow for tristate outputs making it possible to
+	multiplex two leds on one output.
 */
 
 #include <DCC_Decoder.h>
@@ -134,8 +153,8 @@
 
 #define TOTAL_PINS 10
 #define BASE_PIN 3
-#define ASPECT_PARAMETER_SIZE	8
-
+#define ASPECT_PARAMETER_SIZE	8	//# of parameters in each MAS parameter array
+#define MAS_EMPTY_VAL 255			//char which denotes a MAS parameter is not-set
 
 /*DCC related*/
 NmraDcc  Dcc;
@@ -154,12 +173,11 @@ CVPair FactoryDefaultCVs[] =
 };
 
 uint8_t FactoryDefaultCVIndex = 0;
-bool verbose=false;
 
 /*EEprom and version control*/
 struct CONTROLLER
 {
-	long softwareVersion = 20260306;  //yyyymmdd captured as an integer
+	long softwareVersion = 20260322;  //yyyymmdd captured as an integer
 	bool isDirty = false;  //will be true if eeprom needs a write
 	long long padding;
 };
@@ -170,22 +188,18 @@ the padding variable seems to fix a bug on the nano that saw eeprom contents cor
 CONTROLLER bootController;
 CONTROLLER m_defaultController;
 
-//declare EEPROM functions
-void getSettings(void);
-void putSettings(void);
-
-
 //serial communication related
 void recvWithEndMarker();
 const byte numChars = 32;
-char receivedChars[numChars]; // an array to store the received data
-boolean newData = false;
+char receivedChars[numChars]; // array to store the received serial data
+boolean newSerialData = false;
+bool verbose = false;
 
 bool ledState;
+bool MAScommandSync;
 
-/*servo control.  VIRTUALSERVO is each virtualised device with its params.  you command this over serial or DCC
-it also points to an array of servo objects which actually drive the servos
-2026-02-09 added signal aspects*/
+/*servo control.  VIRTUALSERVO is each virtualised device with its params.  Commanded over serial for testing 
+or DCC in normal operation. VIRTUALSERVO objects support both mechanical servos and LED aspect signals */
 enum servoState {
 	SERVO_NEUTRAL,
 	SERVO_TO_THROWN,
@@ -211,24 +225,25 @@ struct VIRTUALSERVO {
 	uint8_t position;
 	int8_t rate;  //+ve values speed up movement, -ve slow it down
 	int8_t timeDelay;  //working register, loaded negative and counts up to zero
-	int8_t aspectParameters[ASPECT_PARAMETER_SIZE * 4];
+	uint8_t aspectParameters[ASPECT_PARAMETER_SIZE * 4];
 	Servo* thisDriver;
-	uint8_t MASstate;  //multiple aspect signals commanded state
+	uint8_t MASstate;  //Multiple Aspect Signal commanded state
 };
 
 
-//define functions here
-uint8_t parseBracketedParameters(char* token, int8_t* result);
-bool isAdvanced(VIRTUALSERVO vs);
+//functions declaraions
+uint8_t parseBracketedParameters(char* token, uint8_t* result);
+bool isMASdevice(VIRTUALSERVO vs);
+void getSettings(void);
+void putSettings(void);
 
 
 
-//statemachines and params
+//virtual servo objects
 VIRTUALSERVO virtualservoCollection[TOTAL_PINS];
 
 //servo drivers. This library creates a servo driver (pulse posn modulation) for each of the arduino pins
 Servo servoDriver[TOTAL_PINS];
-
 
 
 unsigned long currentMs;
@@ -244,15 +259,15 @@ void setup() {
 	getSettings();
 	pinMode(LED_BUILTIN, OUTPUT);
 
-	//DCC, setup which External Interrupt, the Pin it's associated with that we're using and enable the Pull-Up 
-	//for my circuit, dcc is active low through a pulldown diode and a series 5k1k res, hence need the pull-up
-	//for the nano, int 0 is on pin 2
+	//DCC, setup the External Interrupt, the Pin it's associated with that we're using and enable the Pull-Up 
+	//for my circuit, DCC is active low through a pulldown diode and a series 5k1 res, hence need the pull-up
+	//for the Nano, int 0 is on pin 2
 	Dcc.pin(0, 2, 1);
 
 	// Call the main DCC Init function to enable the DCC Receiver
 	Dcc.init(MAN_ID_DIY, 10, CV29_ACCESSORY_DECODER | CV29_OUTPUT_ADDRESS_MODE, 0);
 	Serial.println("DCC initialised");
-	Serial.println("Commands are s p x d a r v\n");
+	Serial.println("Commands are s p x d D a A r v\n");
 
 }
 
@@ -278,19 +293,18 @@ void notifyDccSigOutputState(uint16_t addr, uint8_t state) {
 		Serial.print(',');
 		Serial.println(state, DEC);
 	}
-	//once we find the VS slot from the addr, we need to confirm it isAdvanced() and only then process the action
+	//once we find the vs slot from the DCC address, we need to confirm it isMASdevice() and only then process the action
 
 	for (auto& vs : virtualservoCollection) {
 		if (addr != vs.address) continue;
 		if (vs.isServo) continue;
-		if (!isAdvanced(vs)) continue;
+		if (!isMASdevice(vs)) continue;
 		
 		vs.MASstate = state;
 		vs.state = ASPECT_MULTIPLE;
-		
+		//synchronise the command execution with LEDstate
+		MAScommandSync = false;
 	}
-
-
 
 }
 
@@ -342,7 +356,7 @@ void notifyDccAccTurnoutOutput(uint16_t Addr, uint8_t Direction, uint8_t OutputP
 		}
 		else {
 			//2026-03-07 only respond to the command if the signal is not a multi-aspect device
-			if (isAdvanced(vs)) return;
+			if (isMASdevice(vs)) return;
 			vs.state = Direction == 0 ? ASPECT_CLOSED : ASPECT_THROWN;
 		}
 
@@ -378,12 +392,14 @@ void loop() {
 			ledState = !ledState;
 			if (ledState)	digitalWrite(LED_BUILTIN, HIGH);
 			if (!ledState) digitalWrite(LED_BUILTIN, LOW);
+			//sync all MAS aspect changes with an LED edge
+			MAScommandSync = true;
 		}
 
 		//update all moving servos every 15mS
 		//in normal non-invert mode, minPosition is turnout closed, and maxPosition is turnout thrown
 
-		//for signal aspects, we move from ASPECT_CLOSED or ASPECT_THROWN straight to the antiphase, and we pay heed to the .power parameter
+		//for signal aspects, we move from ASPECT_CLOSED or ASPECT_THROWN straight to the antiphase, and we heed the .power parameter
 
 		for (auto& vs : virtualservoCollection) {
 			uint8_t maxPosition = vs.swing + 90;
@@ -480,8 +496,9 @@ void loop() {
 
 
 			case ASPECT_MULTIPLE:
-				//2026-03-07 new code required to handle this, including gating on/off for flashing
-				assertAspectState(vs);
+				// MAScommandSync is set by an LEDstate edge, thus synchronising all changes with the master LED clock.
+				// this prevents short-duration flashses when changing to one of the MAS flashing aspects
+				if (MAScommandSync) assertMASoutput(vs);
 				break;
 
 			case SERVO_BOOT:
@@ -498,7 +515,7 @@ void loop() {
 					else {
 						//aspect. Immediately go to closed state with power off
 						vs.power = false;
-						vs.state = isAdvanced(vs) ? ASPECT_MULTIPLE: ASPECT_CLOSED;
+						vs.state = isMASdevice(vs) ? ASPECT_MULTIPLE: ASPECT_CLOSED;
 						vsBoot = nullptr;
 						bootTimer = 0;
 						vs.thisDriver->detach();
@@ -532,14 +549,14 @@ void loop() {
 	recvWithEndMarker();
 
 	//process serial command
-	if (newData) {
+	if (newSerialData) {
 		//need a temporary virtualservo object
 		VIRTUALSERVO vsParse;
 		//also need a pointer to a servo in virtualservoCollection
 		VIRTUALSERVO* vsPointer = nullptr;
 
 		//Serial.println(receivedChars);
-		newData = false;
+		newSerialData = false;
 
 		//ASPECT set-up command. Usage: a pin,addr,invert,[ignorePower]
 		//ignorePower is default true and will ignore dcc power off commands
@@ -590,8 +607,8 @@ void loop() {
 				//match to a pin member of servoslot and copy it over  
 				for (auto& vs : virtualservoCollection) {
 					if (vs.pin == vsParse.pin) {
-						//clear vsParse.aspectParameters to -1, as this array is only used by multi aspect signals
-						memset(vsParse.aspectParameters, -1, 4 * ASPECT_PARAMETER_SIZE * sizeof(int8_t));
+						//clear vsParse.aspectParameters to MAS_EMPTY_VAL, as this array is only used by multi aspect signals
+						memset(vsParse.aspectParameters, MAS_EMPTY_VAL, 4 * ASPECT_PARAMETER_SIZE * sizeof(int8_t));
 						vsParse.thisDriver = vs.thisDriver;
 						vs = vsParse;  //copy over from vsParse
 						if (vs.thisDriver->attached()) vs.thisDriver->detach();
@@ -615,7 +632,7 @@ void loop() {
 			vsParse.isServo = true;
 			vsParse.ignorePowerParameter = true;
 			vsParse.continuous = false;  //default setting
-			memset(vsParse.aspectParameters, -1, 4 * ASPECT_PARAMETER_SIZE * sizeof(int8_t));
+			memset(vsParse.aspectParameters, MAS_EMPTY_VAL, 4 * ASPECT_PARAMETER_SIZE * sizeof(int8_t));
 
 			//detokenize
 char* pch;
@@ -717,14 +734,11 @@ else
 						vsPointer = (VIRTUALSERVO*)&vs;
 
 						//2026-03-09 if this is a MAS signal, this command will not work
-						if (isAdvanced(vs)){
+						if (isMASdevice(vs)){
 							Serial.println(F("Cannot use command on MAS aspect"));
 							p = -1;
 						}
 					}
-					
-
-
 					break;
 
 				case 2:
@@ -878,9 +892,10 @@ else
 
 					for (auto& vs : virtualservoCollection) {
 						if (vs.address != address) continue;
-						if (!isAdvanced(vs)) continue;
+						if (!isMASdevice(vs)) continue;
 						vs.MASstate = state;
-						Serial.println(assertAspectState(vs),DEC);
+						MAScommandSync = false;
+						Serial.println(assertMASoutput(vs),DEC);
 					}
 					break;
 				}
@@ -992,7 +1007,7 @@ else
 				}
 				else {
 					//dump signal aspects
-					if (isAdvanced(vs)) {
+					if (isMASdevice(vs)) {
 						Serial.print(F("MAS pin "));
 						Serial.print(vs.pin, DEC);
 						Serial.print(F("  address "));
@@ -1001,7 +1016,7 @@ else
 						Serial.print(vs.invert, DEC);
 
 						Serial.print(F("  output "));
-						switch (assertAspectState(vs)) {
+						switch (assertMASoutput(vs)) {
 						case 0:
 							Serial.print("0 ");
 							break;
@@ -1034,7 +1049,7 @@ else
 								noSpace = true;
 							}
 
-							if (vs.aspectParameters[a] == -1) continue;
+							if (vs.aspectParameters[a] == MAS_EMPTY_VAL) continue;
 							if (!noSpace) Serial.print(" ");
 							Serial.print(vs.aspectParameters[a], DEC);
 							noSpace = false;
@@ -1143,15 +1158,8 @@ else
 					{
 					case 2:
 
-						bufOffset += 8;
+						bufOffset += ASPECT_PARAMETER_SIZE;
 						i++;
-						/*
-						Serial.print("bufOffset=");
-						Serial.println(bufOffset, DEC);
-						Serial.println(vsParse.aspectParameters[0], DEC);
-						Serial.println(vsParse.aspectParameters[1], DEC);
-						Serial.println(vsParse.aspectParameters[2], DEC);
-						*/
 						break;
 
 					case 4:
@@ -1196,26 +1204,7 @@ else
 					vs.state = ASPECT_MULTIPLE;
 					break;
 				}
-			
-
-				//DEBUG BLOCK
-				/*
-				Serial.println(vsParse.pin, DEC);
-				Serial.println(vsParse.address, DEC);
-
-				for (auto vs : virtualservoCollection) {
-					if (vs.pin != vsParse.pin) continue;
-					//dump the buffer
-					for (uint8_t a = 0;a < 32;a++) {
-						Serial.print(" ");
-						Serial.print(vs.aspectParameters[a], DEC);
-					
-					}
-					Serial.print(" A=");
-					Serial.println(isAdvanced(vs), DEC);
-				}
-				*/
-
+				bootController.isDirty = true;
 				putSettings();
 				Serial.println("OK");
 			}
@@ -1246,7 +1235,7 @@ void recvWithEndMarker() {
 	char rc;
 
 	// if (Serial.available() > 0) {
-	while ((Serial.available() > 0) && (newData == false)) {
+	while ((Serial.available() > 0) && (newSerialData == false)) {
 		rc = Serial.read();
 
 		if (rc != endMarker) {
@@ -1259,7 +1248,7 @@ void recvWithEndMarker() {
 		else {
 			receivedChars[ndx] = '\0'; // terminate the string
 			ndx = 0;
-			newData = true;
+			newSerialData = true;
 		}
 	}
 }
@@ -1293,7 +1282,7 @@ void getSettings(void) {
 			vs.ignorePowerParameter = true;
 			vs.isServo = true;
 			vs.rate = 0;
-			memset(vs.aspectParameters, -1, 4 * ASPECT_PARAMETER_SIZE * sizeof(int8_t));
+			memset(vs.aspectParameters, MAS_EMPTY_VAL, 4 * ASPECT_PARAMETER_SIZE * sizeof(int8_t));
 			++p;
 		}
 		/*write back default values*/
@@ -1416,11 +1405,14 @@ void EEpromTest(void) {
 /// <summary>
 /// call from a strtok loop, repeatedly passing in tokens. It will parse looking for [aa bb cc]
 /// max of 8 parameters, min no params.  params must be enclosed in square brackets.
+/// params values can be 0-254.  255 is a reserved value.
 /// </summary>
 /// <param name="token">null terminated char string</param>
 /// <param name="result">array to receive the numeric parameters recovered</param>
-/// <returns>2 when the entire set of max 8 tokens is parsed.  non-values are represented as -1 </returns>
-uint8_t parseBracketedParameters(char* token, int8_t* result) {
+/// <returns>2 when the entire set of max 8 tokens is parsed.  non-values are represented as 255 </returns>
+uint8_t parseBracketedParameters(char* token, uint8_t* result) {
+	//known bug: you can pass in params values >254 or negative and they will be stored/truncated into the parameter arrays with
+	//unpredictable outcomes.  They are not validated here.
 	static int8_t arr[ASPECT_PARAMETER_SIZE];
 	static uint8_t c = 0;
 	static uint8_t parserState = 0;
@@ -1442,9 +1434,9 @@ uint8_t parseBracketedParameters(char* token, int8_t* result) {
 	case 0:  //not in a [] block
 		if (!foundStart) break;
 		parserState = 1;
-		//fill arr[] with -1
+		//fill arr[] with MAS_EMPTY_VAL
 		for (c = 0;c < 8;c++) {
-			arr[c] = -1;
+			arr[c] = MAS_EMPTY_VAL;
 		}
 		c = 0;
 
@@ -1524,94 +1516,63 @@ uint8_t parseBracketedParameters(char* token, int8_t* result) {
 
 
 
-bool isAdvanced(VIRTUALSERVO vs) {
-//may be able to make this a member function of VIRTUALSERVO - it will increase struct size by a pointer var
+/// <summary>
+/// test if the vs object is a Multiple Aspect Signal device
+/// </summary>
+/// <param name="vs">target vs</param>
+/// <returns>true if a MAS device</returns>
+bool isMASdevice(VIRTUALSERVO vs) {
+//Note; could make this a member function of VIRTUALSERVO - but it will increase struct size by a pointer var.
+//if all aspectParameter arrays are full of MAS_EMPTY_VAL then the device is not a MAS device
 	for (int a = 0;a < ASPECT_PARAMETER_SIZE * 4; a++) {
-		if (vs.aspectParameters[a] != -1) return true;
+		if (vs.aspectParameters[a] != MAS_EMPTY_VAL) return true;
 	}
 	return false;
 }
 
 
 /// <summary>
-/// Default state, including boot (which sets MASstate=127) will be Tristate.  If MASstate appears in one of 
-/// the parameter arrays, it will drive the pin active hi|low or flash variants thereof.
-/// If MASstate is not a recognised code (on this pin) then the pin goes tristate.
+/// Asserts the pin output state based on the MASstate of the vs object.
+/// Default state, including boot (which sets MASstate=127) or no-match on the MASstate code will be tristate.
+/// If MASstate code does appear in one/more of the parameter arrays, it will drive the pin active hi|low or the flash variants thereof.
 /// </summary>
 /// <param name="vs">target virtual servo</param>
-/// <returns>the output state: 0 active low, 1 active hi, 2 tristate</returns>
-uint8_t assertAspectState(VIRTUALSERVO vs) {
+/// <returns>pin output state just set: 0 low, 1 hi, 2 tristate.</returns>
+uint8_t assertMASoutput(VIRTUALSERVO vs) {
 	/*All MAS pins will boot as power=off, i.e. tristate
-	* The first MAS resolved code will set power=on and assert a hi|lo or flash variant thereof
-	* Non resolved codes.  Will result in a tristate output.  If you don't want this, you need to 
-	* map all MAScodes to the pin to describe a hi|lo behaviour.
-	*/
-
-	/*
-	bool hasCommonCode = false;
-	//first scan for at least one common code between [hi] and [lo]
-	for (int a = 0;a< ASPECT_PARAMETER_SIZE - 1;a++) {  
-		if (vs.aspectParameters[a] == -1) continue;
-		if (hasCommonCode) continue;
-		for (int c = ASPECT_PARAMETER_SIZE;c < (ASPECT_PARAMETER_SIZE * 2) - 1;c++) {
-			if (vs.aspectParameters[c] == -1) continue;
-			if (vs.aspectParameters[a] == vs.aspectParameters[c]) {
-				hasCommonCode = true;
-				break;
-			}
-		} 
-	}
-
-	//then scan for at least one common code between [hi-f] and [low-f]
-	for (int a = 0;a < (ASPECT_PARAMETER_SIZE *3)- 1;a++) {  
-		if (vs.aspectParameters[a] == -1) continue;
-		if (hasCommonCode) continue;
-		for (int c = ASPECT_PARAMETER_SIZE*3;c < (ASPECT_PARAMETER_SIZE *4) - 1;c++) {
-			if (vs.aspectParameters[c] == -1) continue;
-			if (vs.aspectParameters[a] == vs.aspectParameters[c]) {
-				hasCommonCode = true;
-				break;
-			}
-		}
-	}
+	* if no MAS command code is reserved, we exit tristate
+	* flash-lo and flash-hi, if resolved are gated with the LEDstate. This allows a pin to go low-high flashing if the same command
+	* is present in [hi-flash] [hi-flash] e.g. A pin addr 0 [] [] [7] [7] will alternate hi-lo on the output
+	* if [hi] [lo] codes also match, then these take precedence over flash, and high takes precedence over low
+	* e.g. A pin addr 0 [7] [7] [7] [7] will always drive hi on resolving a 7
+	* invert is applied to the final pin state after the brackets are resolved
 	*/
 
 	
-//order of precedence is flash low, flash high, assert low, asssert hi
-/*use cases pin 2 addr 7 [hi 5] [low 5] [] []   will drive pin 2 hi/low but because both [hi] and [lo] contain same aspect code, its clear
-* there is no tristate option for this pin, i.e. its always active
-* pin 2 addr 7 [hi 3] [lo 4] means that there is a tristate case where some other code might be used on a separate in and in which case this
-* pin will go tristate.
-*/
-
-
+//note, arduino.h defines constants of LOW=0, HIGH=1 but no tristate
+//this is why we use our own states here
 	enum output {
 		LO,
 		HI,
 		TRISTATE,
 	};
 
-	//note, arduino.h defines constants of LOW=0, HIGH=1 but no tristate
-	
-
 	uint8_t outputState = TRISTATE;
 		
-
 	for (int a = (ASPECT_PARAMETER_SIZE * 4) - 1;a > -1;a--) {
-		switch (int(a / 8)) {
+		switch (int(a / ASPECT_PARAMETER_SIZE)) {
 		case 3:
 			//flash low
 			if (vs.aspectParameters[a] == vs.MASstate) {
-				//assert low gated with flash flag
-				if (ledState) outputState = LO;
+				//assert low gated with ledState == low, this allows flash lo/hi to work on the same pin
+				if (!ledState) outputState = LO;
 			}
 			break;
-
 
 		case 2:
 			//flash high
 			if (vs.aspectParameters[a] == vs.MASstate) {
-				//assert low gated with flash flag
+				//assert hi gated with ledState == high, this allows flash lo/hi to work on the same pin
 				if (ledState) outputState = HI;
 			}
 			break;
@@ -1623,7 +1584,7 @@ uint8_t assertAspectState(VIRTUALSERVO vs) {
 			}
 			break;
 
-		case 0: //solid hi
+		case 0: //solid hi, which has highest precedence
 			if (vs.aspectParameters[a] == vs.MASstate) {
 				outputState = HI;
 			}
@@ -1632,8 +1593,7 @@ uint8_t assertAspectState(VIRTUALSERVO vs) {
 
 	}
 
-
-	//assert the output, also process invert
+	//assert the output pin, also process invert
 	switch (outputState) {
 	case TRISTATE:
 		pinMode(vs.pin, INPUT);
@@ -1653,7 +1613,7 @@ uint8_t assertAspectState(VIRTUALSERVO vs) {
 
 	}
 
-		return outputState;
+	return outputState;
 
 }
 
@@ -1663,25 +1623,3 @@ uint8_t assertAspectState(VIRTUALSERVO vs) {
 
 
 
-
-
-/* aspect logic
-* for 'a' we respond to addr and drive the pin hi/low there is no tri state
-* for 'A'
-* if [hi=7] and [lo=7] then we will actively drive pin based on Thrown =hi (unless invert)
-* so it will be active hi|low, no tri state
-* if [hi=7] and [lo=-1] then pin is active hi and tristate otherwise
-
-So i can meld both a and A into the same struct, however if user is using a they don't want complexity of A
-and also system needs to know whether to respond to turnout command or advanced-aspect
-
-also for 'a' we don't use an aspect code.  so easiest way to know if something is A or a is to check if all elements of aspectPArams are -1
-if they are, we are using 'a'
-
-
-
-
-
-
-
-*/
